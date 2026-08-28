@@ -134,6 +134,23 @@ func TestByIDsRejectsOwnerSetAboveBoundInsteadOfTruncating(t *testing.T) {
 	}
 }
 
+func TestBotStatusReadsViewerIndependentBaseFact(t *testing.T) {
+	ctx := context.Background()
+	base := memory.NewUserStore()
+	bot, err := base.Create(ctx, domain.User{AccessHash: 1, Phone: "15550000077", FirstName: "Bot", Bot: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(base)
+	got, found, err := svc.BotStatus(ctx, bot.ID)
+	if err != nil || !found || !got {
+		t.Fatalf("BotStatus = %v, found=%v, err=%v", got, found, err)
+	}
+	if got, found, err := svc.BotStatus(ctx, bot.ID+1000); err != nil || found || got {
+		t.Fatalf("missing BotStatus = %v, found=%v, err=%v", got, found, err)
+	}
+}
+
 func TestPrivacyBaseUsersRejectsViewerSetAboveBoundInsteadOfNegativeCachingTruncation(t *testing.T) {
 	svc := NewService(memory.NewUserStore())
 	ids := make([]int64, maxBatchUsers+1)
@@ -399,6 +416,48 @@ func TestServiceUsesBaseCacheWithoutCachingViewerOverlay(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateLastSeenBatchIsMonotonicAndInvalidatesOnce(t *testing.T) {
+	ctx := context.Background()
+	base := memory.NewUserStore()
+	first, err := base.Create(ctx, domain.User{AccessHash: 1, Phone: "15550000881", FirstName: "First"})
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second, err := base.Create(ctx, domain.User{AccessHash: 2, Phone: "15550000882", FirstName: "Second"})
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	cache := newMemoryBaseUserCache()
+	if err := cache.PutMany(ctx, []domain.User{first, second}); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+	svc := NewService(base, WithBaseUserCache(cache))
+	if err := svc.UpdateLastSeenBatch(ctx, []store.UserLastSeenUpdate{
+		{UserID: second.ID, LastSeenAt: 20},
+		{UserID: first.ID, LastSeenAt: 9},
+		{UserID: first.ID, LastSeenAt: 17},
+	}); err != nil {
+		t.Fatalf("UpdateLastSeenBatch: %v", err)
+	}
+	loadedFirst, found, err := base.ByID(ctx, first.ID)
+	if err != nil || !found || loadedFirst.LastSeenAt != 17 {
+		t.Fatalf("first last seen = %d found=%v err=%v, want 17", loadedFirst.LastSeenAt, found, err)
+	}
+	loadedSecond, found, err := base.ByID(ctx, second.ID)
+	if err != nil || !found || loadedSecond.LastSeenAt != 20 {
+		t.Fatalf("second last seen = %d found=%v err=%v, want 20", loadedSecond.LastSeenAt, found, err)
+	}
+	if cache.deleteCalls != 1 {
+		t.Fatalf("cache delete calls = %d, want one batch invalidation", cache.deleteCalls)
+	}
+	if _, ok := cache.users[first.ID]; ok {
+		t.Fatal("first user remained cached")
+	}
+	if _, ok := cache.users[second.ID]; ok {
+		t.Fatal("second user remained cached")
+	}
+}
+
 func TestServiceRefreshesBaseCacheAfterProfileUpdate(t *testing.T) {
 	ctx := context.Background()
 	base := memory.NewUserStore()
@@ -580,7 +639,8 @@ func (s *countingUserStore) ByIDs(ctx context.Context, ids []int64) ([]domain.Us
 }
 
 type memoryBaseUserCache struct {
-	users map[int64]domain.User
+	users       map[int64]domain.User
+	deleteCalls int
 }
 
 func newMemoryBaseUserCache() *memoryBaseUserCache {
@@ -607,6 +667,7 @@ func (c *memoryBaseUserCache) PutMany(_ context.Context, users []domain.User) er
 }
 
 func (c *memoryBaseUserCache) Delete(_ context.Context, ids []int64) error {
+	c.deleteCalls++
 	for _, id := range ids {
 		delete(c.users, id)
 	}
