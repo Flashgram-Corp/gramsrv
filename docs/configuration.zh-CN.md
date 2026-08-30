@@ -74,7 +74,7 @@ live expanded buffer 释放后会归还进程内存，但不会返还该 frame �
 | `TELESRV_ADMIN_SCOPED_TOKENS` | 用 `;` 分隔的 `name:token:perm1,perm2` 条目 / 空 | 额外的 Admin API bearer token，每个 token 只携带指定权限，供集成服务按最小权限访问，避免使用无限制的 `TELESRV_ADMIN_API_TOKEN`。token 不能包含 `:` 或空白字符，每个条目必须至少列出一个权限，name/token 必须唯一，且禁止复用 `TELESRV_ADMIN_API_TOKEN`，否则会把受限 token 静默放大成全权限。任何格式错误都会让启动失败。 |
 | `TELESRV_PUBLIC_BASE_URL` | HTTP(S) URL / `https://telesrv.net` | 客户端可见的公开链接根地址；允许 path，禁止 credentials、query、fragment。本地例：`http://127.0.0.1:2401`。 |
 | `TELESRV_BRAND_PRODUCT_NAME` | string / `Telesrv` | 母品牌显示名；系统账号、登录通知、邀请、WebAuthn、内置 bot 与上游可见文案替换共用。trim 后非空、无控制字符、最多 64 个 Unicode 字符。 |
-| `TELESRV_BRAND_PRODUCT_USERNAME` | username / `telesrv` | 777000 系统账号的公开 username；trim、去掉可选 `@` 后规范成小写，必须为 5–32 位 ASCII username 且首字符为字母。 |
+| `TELESRV_BRAND_PRODUCT_USERNAME` | username / `telesrv` | 777000 系统账号的保留公开 username；trim、去掉可选 `@` 后规范成小写，必须为 5–32 位 ASCII username 且首字符为字母。启动时若被普通用户占用，该用户的可编辑 username 会被清空并交还给 777000；不会自动抢占 Bot、其他系统账号、频道或 collectible username。 |
 | `TELESRV_BRAND_DESKTOP_APP_NAME` | string / `Telesrv Desktop` | `account.getAuthorizations` 返回的 Desktop/Windows 显示名；校验规则同产品名。 |
 | `TELESRV_BRAND_ANDROID_APP_NAME` | string / `Telesrv Android` | 授权列表中的 Android 显示名；校验规则同产品名。 |
 | `TELESRV_BRAND_IOS_APP_NAME` | string / `Telesrv iOS` | 授权列表中的 iOS 显示名；校验规则同产品名。 |
@@ -694,7 +694,7 @@ active key。不要手工编辑 manifest 或 PEM，不要在各实例上分别�
 
 ### 第三方 bot 认证
 
-第三方认证对应 `botVerification`，由管理员授权的 verifier bot 使用自己的 custom emoji document 与描述标记 user/channel，不会授予官方 checkmark。Icon 必须是客户端可通过 `messages.getCustomEmojiDocuments` 读取的真实 document。每个 peer 只保留一个 wire-visible mark；新的 verifier 替换旧 mark，禁止旧 badge 在撤销或 kill switch 后意外复活。客户端自定义描述上限通过 appConfig `bot_verification_description_length_limit=70` 发布。
+第三方认证对应 `botVerification`，由管理员授权的 verifier bot 使用自己的 custom emoji document 与描述标记 user/channel，不会授予官方 checkmark。Icon 必须是客户端可通过 `messages.getCustomEmojiDocuments` 读取的真实 document。每个 peer 只保留一个 wire-visible mark；新的 verifier 替换旧 mark，禁止旧 badge 在撤销或 kill switch 后意外复活。客户端自定义描述上限通过 appConfig `bot_verification_description_length_limit=128` 发布。
 
 | 参数 | 类型 / 代码默认值 | 说明与约束 |
 |---|---|---|

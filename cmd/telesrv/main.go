@@ -756,6 +756,16 @@ func run(logger *zap.Logger) error {
 	}
 	defer authKeySessionLayerStore.Close()
 	userStore := postgres.NewUserStore(pool)
+	// The configured product username belongs to the official 777000 identity.
+	// Claiming it is atomic with clearing an ordinary account that occupied the
+	// editable slot; protected identities and collectible names are not seized.
+	if claim, err := userStore.ClaimOfficialUsername(ctx, branding.ProductUsername()); err != nil {
+		logger.Warn("sync system account username", zap.Error(err))
+	} else if claim.DisplacedUserID != 0 {
+		logger.Warn("reclaimed system account username from ordinary user",
+			zap.String("username", claim.Official.Username),
+			zap.Int64("displaced_user_id", claim.DisplacedUserID))
+	}
 	authzStore := postgres.NewAuthorizationStore(pool)
 	adminStore := postgres.NewAdminStore(pool)
 	updateStateStore := postgres.NewUpdateStateStore(pool)
@@ -1134,6 +1144,33 @@ func run(logger *zap.Logger) error {
 		botsapp.WithTelegramLogin(telegramLoginService),
 		botsapp.WithDialogRateLimiter(rateLimiter, cfg.VerificationBotRateLimit, cfg.VerificationBotRateWindow),
 		botsapp.WithPublicBaseURL(cfg.PublicBaseURL))
+	// The built-in ChatBot and StickersBot are seeded with the default product
+	// name in their bio (users.about) and description (bots.description). Align
+	// them with the active branding on startup so the seeded "telesrv" text is
+	// replaced. SetBotInfo writes both fields; the sync is a no-op when the text
+	// already matches.
+	for _, botID := range []int64{domain.ChatBotUserID, domain.StickersBotUserID} {
+		var wantAbout, wantDesc string
+		switch botID {
+		case domain.ChatBotUserID:
+			wantAbout = domain.ChatBotDescription()
+			wantDesc = wantAbout
+		case domain.StickersBotUserID:
+			wantAbout = domain.StickersBotDescription()
+			wantDesc = wantAbout
+		}
+		if _, curAbout, curDesc, err := botsService.GetBotInfo(ctx, botID); err == nil && curAbout == wantAbout && curDesc == wantDesc {
+			continue
+		}
+		if _, err := botsService.SetBotInfo(ctx, botID, domain.BotInfoUpdate{
+			SetAbout:       true,
+			About:          wantAbout,
+			SetDescription: true,
+			Description:    wantDesc,
+		}); err != nil {
+			logger.Warn("sync bot branding", zap.Int64("bot", botID), zap.Error(err))
+		}
+	}
 	groupCallStore := postgres.NewGroupCallStore(pool)
 	groupCallsService := groupcallsapp.NewService(groupCallStore, groupcallsapp.WithPublicBaseURL(cfg.PublicBaseURL))
 	// 群通话媒体面：内嵌 pion SFU（M1+）。SFU 的 liveness reporter 把媒体面存活
