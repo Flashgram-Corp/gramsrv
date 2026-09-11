@@ -1230,6 +1230,62 @@ func TestStarGiftCollectiblePreviewUpgradeFormUniqueAndServiceProjection(t *test
 	}
 }
 
+func TestUniqueStarGiftLinkHidesOwnerIdentityWhenUnsaved(t *testing.T) {
+	r, sender, owner, gift := starGiftTestRouter(t)
+	ctx := context.Background()
+	model := collectibleRPCAttribute(domain.StarGiftCollectibleModel, 8101, "Aurora")
+	pattern := collectibleRPCAttribute(domain.StarGiftCollectiblePattern, 8102, "Orbit")
+	backdrop := collectibleRPCAttribute(domain.StarGiftCollectibleBackdrop, 1, "Midnight")
+
+	unique := domain.UniqueStarGift{
+		ID: 9200000000000002, GiftID: gift.ID, Title: gift.Title, Slug: "cake-9", Num: 9,
+		Owner: domain.Peer{Type: domain.PeerTypeUser, ID: owner.ID},
+		Model: model, Pattern: pattern, Backdrop: backdrop,
+		AvailabilityIssued: 1, AvailabilityTotal: 500,
+		Unsaved: true,
+	}
+	r.deps.Gifts = &uniqueGiftRPCService{GiftsService: r.deps.Gifts, unique: unique}
+
+	ownerView, err := r.onPaymentsGetUniqueStarGift(WithUserID(ctx, owner.ID), unique.Slug)
+	if err != nil {
+		t.Fatalf("owner get unique gift err = %v", err)
+	}
+	ownerGift, ok := ownerView.Gift.(*tg.StarGiftUnique)
+	if !ok {
+		t.Fatalf("owner unique gift type = %T", ownerView.Gift)
+	}
+	if _, set := ownerGift.GetOwnerID(); set {
+		t.Fatalf("owner view of own hidden gift must not receive owner_id: %#v", ownerGift)
+	}
+	if name, set := ownerGift.GetOwnerName(); !set || name != owner.FirstName {
+		t.Fatalf("owner view of own hidden gift owner_name = %q set=%v, want %q", name, set, owner.FirstName)
+	}
+
+	viewerView, err := r.onPaymentsGetUniqueStarGift(WithUserID(ctx, sender.ID), unique.Slug)
+	if err != nil {
+		t.Fatalf("viewer get unique gift err = %v", err)
+	}
+	viewerGift, ok := viewerView.Gift.(*tg.StarGiftUnique)
+	if !ok {
+		t.Fatalf("viewer unique gift type = %T", viewerView.Gift)
+	}
+	if _, set := viewerGift.GetOwnerID(); set {
+		t.Fatalf("viewer of hidden gift must not receive owner_id: %#v", viewerGift)
+	}
+	if name, set := viewerGift.GetOwnerName(); !set || name != owner.FirstName {
+		t.Fatalf("viewer of hidden gift owner_name = %q set=%v, want %q", name, set, owner.FirstName)
+	}
+	foundOwnerUser := false
+	for _, user := range viewerView.Users {
+		if u, ok := user.(*tg.User); ok && u.ID == owner.ID {
+			foundOwnerUser = true
+		}
+	}
+	if !foundOwnerUser {
+		t.Fatalf("viewer of hidden gift must still receive owner user object for original details: %#v", viewerView.Users)
+	}
+}
+
 func TestStarGiftUpgradePreviewBoundsRandomSampleWithoutShrinkingFullAttributes(t *testing.T) {
 	r, _, owner, gift := starGiftTestRouter(t)
 	ctx := WithUserID(context.Background(), owner.ID)

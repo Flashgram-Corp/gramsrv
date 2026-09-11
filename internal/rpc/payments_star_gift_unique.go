@@ -280,8 +280,13 @@ func (r *Router) onPaymentsGetUniqueStarGift(ctx context.Context, slug string) (
 	if !found {
 		return nil, starGiftInvalidErr()
 	}
+	projection := unique
+	if unique.Unsaved {
+		projection.Owner = domain.Peer{}
+		projection.OwnerName = r.resolveGiftOwnerDisplayName(ctx, viewerUserID, unique)
+	}
 	out := &tg.PaymentsUniqueStarGift{
-		Gift:  tgUniqueStarGift(unique),
+		Gift:  tgUniqueStarGift(projection),
 		Chats: []tg.ChatClass{},
 		Users: []tg.UserClass{},
 	}
@@ -296,6 +301,32 @@ func (r *Router) onPaymentsGetUniqueStarGift(ctx context.Context, slug string) (
 		out.Chats = r.tgChatsForChannelIDs(ctx, viewerUserID, []int64{unique.Owner.ID})
 	}
 	return out, nil
+}
+
+// resolveGiftOwnerDisplayName 取唯一礼物当前 owner 的展示名。隐藏（unsaved）
+// 的礼物被非 owner 通过链接查看时，投影只用纯文本名（无 peer），避免把资料链接、
+// 头像和 premium 徽章暴露给外部查看者。查不到任何用户信息时回退到落库的 owner_name。
+func (r *Router) resolveGiftOwnerDisplayName(ctx context.Context, viewerUserID int64, unique domain.UniqueStarGift) string {
+	switch unique.Owner.Type {
+	case domain.PeerTypeUser:
+		users := r.domainUsersForIDs(ctx, viewerUserID, []int64{unique.Owner.ID})
+		for _, u := range users {
+			if name := strings.TrimSpace(strings.TrimSpace(u.FirstName) + " " + strings.TrimSpace(u.LastName)); name != "" {
+				return name
+			}
+		}
+	case domain.PeerTypeChannel:
+		chats := r.tgChatsForChannelIDs(ctx, viewerUserID, []int64{unique.Owner.ID})
+		for _, chat := range chats {
+			if c, ok := chat.(*tg.Channel); ok && c != nil && strings.TrimSpace(c.Title) != "" {
+				return c.Title
+			}
+		}
+	}
+	if name := strings.TrimSpace(unique.OwnerName); name != "" {
+		return name
+	}
+	return "Hidden"
 }
 
 func tgStarGiftPreviewAttributes(preview domain.StarGiftUpgradePreview) []tg.StarGiftAttributeClass {
