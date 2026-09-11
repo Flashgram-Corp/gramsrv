@@ -281,7 +281,10 @@ func (r *Router) onPaymentsGetUniqueStarGift(ctx context.Context, slug string) (
 		return nil, starGiftInvalidErr()
 	}
 	projection := unique
-	if unique.Unsaved {
+	// owner_id also drives the owner's management controls in slug views.
+	// Only hide it from other viewers; user and channel IDs are separate namespaces.
+	viewerPeer := domain.Peer{Type: domain.PeerTypeUser, ID: viewerUserID}
+	if unique.Unsaved && unique.Owner != viewerPeer {
 		projection.Owner = domain.Peer{}
 		projection.OwnerName = r.resolveGiftOwnerDisplayName(ctx, viewerUserID, unique)
 	}
