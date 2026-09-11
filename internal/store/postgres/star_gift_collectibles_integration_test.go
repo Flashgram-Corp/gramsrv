@@ -130,6 +130,23 @@ func TestStarGiftCollectibleUpgradeAggregatePostgres(t *testing.T) {
 		upgraded.Saved.ID != savedID || upgraded.Saved.UniqueGiftID != upgraded.Unique.ID || upgraded.Saved.UpgradeMsgID <= 0 {
 		t.Fatalf("upgrade result = %+v", upgraded)
 	}
+	for _, unsaved := range []bool{true, false} {
+		if changed, err := gifts.SetUnsaved(ctx, req.Ref, unsaved); err != nil || !changed {
+			t.Fatalf("set upgraded gift unsaved=%v: changed=%v err=%v", unsaved, changed, err)
+		}
+		bySlug, found, err := gifts.UniqueBySlug(ctx, upgraded.Unique.Slug)
+		if err != nil || !found || bySlug.Unsaved != unsaved || bySlug.Owner != ownerPeer {
+			t.Fatalf("unique slug projection after unsaved=%v: found=%v err=%v gift=%+v", unsaved, found, err, bySlug)
+		}
+		byID, found, err := gifts.UniqueByID(ctx, upgraded.Unique.ID)
+		if err != nil || !found || byID.Unsaved != unsaved || byID.Owner != ownerPeer {
+			t.Fatalf("unique ID projection after unsaved=%v: found=%v err=%v gift=%+v", unsaved, found, err, byID)
+		}
+		byIDs, err := gifts.UniqueByIDs(ctx, []int64{upgraded.Unique.ID})
+		if current, found := byIDs[upgraded.Unique.ID]; err != nil || !found || current.Unsaved != unsaved || current.Owner != ownerPeer {
+			t.Fatalf("unique batch projection after unsaved=%v: found=%v err=%v gift=%+v", unsaved, found, err, current)
+		}
+	}
 	ownerMessage := upgraded.Send.RecipientMessage
 	if ownerMessage.OwnerUserID != owner.ID || ownerMessage.Pts <= 0 || ownerMessage.Media == nil ||
 		ownerMessage.Media.ServiceAction == nil || ownerMessage.Media.ServiceAction.Kind != domain.MessageServiceActionStarGiftUnique ||

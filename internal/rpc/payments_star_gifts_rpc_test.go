@@ -1230,6 +1230,136 @@ func TestStarGiftCollectiblePreviewUpgradeFormUniqueAndServiceProjection(t *test
 	}
 }
 
+func TestUniqueStarGiftLinkPreservesOwnerIdentityWhenUnsaved(t *testing.T) {
+	r, sender, owner, gift := starGiftTestRouter(t)
+	ctx := context.Background()
+	model := collectibleRPCAttribute(domain.StarGiftCollectibleModel, 8101, "Aurora")
+	pattern := collectibleRPCAttribute(domain.StarGiftCollectiblePattern, 8102, "Orbit")
+	backdrop := collectibleRPCAttribute(domain.StarGiftCollectibleBackdrop, 1, "Midnight")
+
+	unique := domain.UniqueStarGift{
+		ID: 9200000000000002, GiftID: gift.ID, Title: gift.Title, Slug: "cake-9", Num: 9,
+		Owner: domain.Peer{Type: domain.PeerTypeUser, ID: owner.ID},
+		Model: model, Pattern: pattern, Backdrop: backdrop,
+		AvailabilityIssued: 1, AvailabilityTotal: 500,
+		Unsaved: true, CraftChancePermille: 250,
+		ResellAmount:        &domain.StarGiftAmount{Currency: domain.StarGiftCurrencyStars, Amount: 500},
+		KeepOriginalDetails: true, OriginalOwner: domain.Peer{Type: domain.PeerTypeUser, ID: owner.ID},
+		OriginalFromUserID: sender.ID, OriginalDate: 1700000000,
+	}
+	service := &uniqueGiftRPCService{GiftsService: r.deps.Gifts, unique: unique}
+	r.deps.Gifts = service
+
+	ownerView, err := r.onPaymentsGetUniqueStarGift(WithUserID(ctx, owner.ID), unique.Slug)
+	if err != nil {
+		t.Fatalf("owner get unique gift err = %v", err)
+	}
+	ownerGift, ok := ownerView.Gift.(*tg.StarGiftUnique)
+	if !ok {
+		t.Fatalf("owner unique gift type = %T", ownerView.Gift)
+	}
+	if peer, set := ownerGift.GetOwnerID(); !set || !reflect.DeepEqual(peer, &tg.PeerUser{UserID: owner.ID}) {
+		t.Fatalf("owner view must retain owner_id for management controls: peer=%#v set=%v", peer, set)
+	}
+	if name, set := ownerGift.GetOwnerName(); set {
+		t.Fatalf("owner view must not replace its own peer with owner_name %q", name)
+	}
+	if amount, set := ownerGift.GetResellAmount(); !set || len(amount) != 1 || ownerGift.CraftChancePermille != 250 {
+		t.Fatalf("owner view lost listing/craft metadata: %#v", ownerGift)
+	}
+
+	viewerView, err := r.onPaymentsGetUniqueStarGift(WithUserID(ctx, sender.ID), unique.Slug)
+	if err != nil {
+		t.Fatalf("viewer get unique gift err = %v", err)
+	}
+	viewerGift, ok := viewerView.Gift.(*tg.StarGiftUnique)
+	if !ok {
+		t.Fatalf("viewer unique gift type = %T", viewerView.Gift)
+	}
+	if _, set := viewerGift.GetOwnerID(); set {
+		t.Fatalf("viewer of hidden gift must not receive owner_id: %#v", viewerGift)
+	}
+	if name, set := viewerGift.GetOwnerName(); !set || name != owner.FirstName {
+		t.Fatalf("viewer of hidden gift owner_name = %q set=%v, want %q", name, set, owner.FirstName)
+	}
+	foundOwnerUser := false
+	for _, user := range viewerView.Users {
+		if u, ok := user.(*tg.User); ok && u.ID == owner.ID {
+			foundOwnerUser = true
+		}
+	}
+	if !foundOwnerUser {
+		t.Fatalf("viewer of hidden gift must still receive owner user object for original details: %#v", viewerView.Users)
+	}
+	var original *tg.StarGiftAttributeOriginalDetails
+	for _, attribute := range viewerGift.Attributes {
+		if value, ok := attribute.(*tg.StarGiftAttributeOriginalDetails); ok {
+			original = value
+		}
+	}
+	if original == nil || !reflect.DeepEqual(original.RecipientID, &tg.PeerUser{UserID: owner.ID}) {
+		t.Fatalf("hidden gift lost its original recipient: %#v", original)
+	}
+	if peer, set := original.GetSenderID(); !set || !reflect.DeepEqual(peer, &tg.PeerUser{UserID: sender.ID}) {
+		t.Fatalf("hidden gift lost its original sender: peer=%#v set=%v", peer, set)
+	}
+	if !reflect.DeepEqual(service.unique, unique) {
+		t.Fatal("viewer-specific projection mutated the stored unique gift")
+	}
+
+	service.unique.Unsaved = false
+	visibleView, err := r.onPaymentsGetUniqueStarGift(WithUserID(ctx, sender.ID), unique.Slug)
+	if err != nil {
+		t.Fatalf("viewer get visible unique gift: %v", err)
+	}
+	visibleGift := visibleView.Gift.(*tg.StarGiftUnique)
+	if peer, set := visibleGift.GetOwnerID(); !set || !reflect.DeepEqual(peer, &tg.PeerUser{UserID: owner.ID}) {
+		t.Fatalf("visible gift lost its public owner: peer=%#v set=%v", peer, set)
+	}
+}
+
+func TestUniqueStarGiftLinkHiddenOwnerNamespacesAndExport(t *testing.T) {
+	r, _, viewer, gift := starGiftTestRouter(t)
+	for _, tc := range []struct {
+		name         string
+		owner        domain.Peer
+		ownerName    string
+		ownerAddress string
+	}{
+		{name: "channel with the same numeric ID", owner: domain.Peer{Type: domain.PeerTypeChannel, ID: viewer.ID}, ownerName: "Channel owner"},
+		{name: "exported gift", ownerAddress: "telesrv-owner:test-export"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unique := domain.UniqueStarGift{
+				ID: 9200000000000003, GiftID: gift.ID, Title: gift.Title, Slug: "cake-10", Num: 10,
+				Owner: tc.owner, OwnerName: tc.ownerName, OwnerAddress: tc.ownerAddress, Unsaved: true,
+				Model:    collectibleRPCAttribute(domain.StarGiftCollectibleModel, 8101, "Aurora"),
+				Pattern:  collectibleRPCAttribute(domain.StarGiftCollectiblePattern, 8102, "Orbit"),
+				Backdrop: collectibleRPCAttribute(domain.StarGiftCollectibleBackdrop, 1, "Midnight"),
+			}
+			r.deps.Gifts = &uniqueGiftRPCService{GiftsService: r.deps.Gifts, unique: unique}
+			view, err := r.onPaymentsGetUniqueStarGift(WithUserID(context.Background(), viewer.ID), unique.Slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projected := view.Gift.(*tg.StarGiftUnique)
+			if peer, set := projected.GetOwnerID(); set {
+				t.Fatalf("non-user owner must not match a user by numeric ID: %#v", peer)
+			}
+			if tc.ownerAddress != "" {
+				if address, set := projected.GetOwnerAddress(); !set || address != tc.ownerAddress {
+					t.Fatalf("export address = %q set=%v", address, set)
+				}
+				if name, set := projected.GetOwnerName(); set {
+					t.Fatalf("display name %q must not shadow the export address", name)
+				}
+			} else if name, set := projected.GetOwnerName(); !set || name != tc.ownerName {
+				t.Fatalf("hidden channel owner name = %q set=%v", name, set)
+			}
+		})
+	}
+}
+
 func TestStarGiftUpgradePreviewBoundsRandomSampleWithoutShrinkingFullAttributes(t *testing.T) {
 	r, _, owner, gift := starGiftTestRouter(t)
 	ctx := WithUserID(context.Background(), owner.ID)

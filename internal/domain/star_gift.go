@@ -241,6 +241,7 @@ type UniqueStarGift struct {
 	OriginalMessage         string
 	OriginalMessageEntities []MessageEntity
 	OriginalNameHidden      bool
+	Unsaved                 bool // true when the source saved gift is hidden from the owner's profile
 	CreatedAt               time.Time
 }
 
