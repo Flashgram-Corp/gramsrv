@@ -58,6 +58,31 @@ func (s *StarGiftStore) PublishCollectibleRevision(ctx context.Context, write do
 			}
 			return fmt.Errorf("lock collectible catalog gift: %w", err)
 		}
+		// Collectible numbers are unique across every published revision of one
+		// gift_id. A new pool must continue the serial instead of restarting at
+		// one, so seed its issued counter with the numbers already minted or
+		// reserved (unconverted auction wins) and reject a supply smaller than
+		// that consumed set. Otherwise the pool advertizes "quantity 1, issued
+		// 600" and allocateCollectibleGiftNum hands out numbers beyond the
+		// displayed supply while skipping the occupied ones.
+		var consumedCount, consumedMaxNum int
+		if err := tx.QueryRow(ctx, `
+WITH consumed AS (
+    SELECT num FROM unique_star_gifts WHERE gift_id=$1
+    UNION
+    SELECT gift_num FROM peer_star_gifts WHERE gift_id=$1 AND gift_num>0 AND unique_gift_id IS NULL
+)
+SELECT COALESCE(COUNT(*), 0), COALESCE(MAX(num), 0) FROM consumed`, write.GiftID).Scan(&consumedCount, &consumedMaxNum); err != nil {
+			return fmt.Errorf("count consumed collectible numbers: %w", err)
+		}
+		carried := consumedCount
+		if consumedMaxNum > carried {
+			carried = consumedMaxNum
+		}
+		if write.SupplyTotal < carried {
+			return fmt.Errorf("%w: gift %d already occupies %d collectible numbers; supply %d is smaller than the pool it must continue",
+				domain.ErrStarGiftLifecycleInvalid, write.GiftID, carried, write.SupplyTotal)
+		}
 		var revision int
 		if err := tx.QueryRow(ctx, `
 SELECT COALESCE(MAX(revision), 0) + 1 FROM star_gift_collectible_revisions WHERE gift_id=$1`, write.GiftID).Scan(&revision); err != nil {
@@ -66,10 +91,10 @@ SELECT COALESCE(MAX(revision), 0) + 1 FROM star_gift_collectible_revisions WHERE
 		var revisionID int64
 		if err := tx.QueryRow(ctx, `
 INSERT INTO star_gift_collectible_revisions
-    (gift_id, revision, upgrade_stars, supply_total, slug_prefix, status, created_by, command_id,
+    (gift_id, revision, upgrade_stars, supply_total, issued, slug_prefix, status, created_by, command_id,
      official_gift_id, source_manifest_sha256)
-VALUES ($1,$2,$3,$4,$5,'draft',$6,$7,NULLIF($8::bigint,0),$9)
-RETURNING id`, write.GiftID, revision, write.UpgradeStars, write.SupplyTotal, write.SlugPrefix, write.Actor, write.CommandID,
+VALUES ($1,$2,$3,$4,$5,$6,'draft',$7,$8,NULLIF($9::bigint,0),$10)
+RETURNING id`, write.GiftID, revision, write.UpgradeStars, write.SupplyTotal, carried, write.SlugPrefix, write.Actor, write.CommandID,
 			write.OfficialGiftID, nullableSHA256(write.SourceManifestSHA256)).Scan(&revisionID); err != nil {
 			return fmt.Errorf("insert collectible revision: %w", err)
 		}
