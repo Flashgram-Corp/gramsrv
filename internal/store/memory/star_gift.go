@@ -539,7 +539,7 @@ func (s *StarGiftStore) CountByOwner(_ context.Context, owner domain.Peer) (int,
 	defer s.mu.Unlock()
 	n := 0
 	for _, g := range s.gifts {
-		if g.Owner == owner && g.LifecycleStatus.Live() && !g.Unsaved {
+		if g.Owner == owner && g.LifecycleStatus.Live() {
 			n++
 		}
 	}

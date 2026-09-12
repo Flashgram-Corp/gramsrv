@@ -198,10 +198,10 @@ func TestStarGiftStorePostgres(t *testing.T) {
 		t.Fatalf("convert missing err = %v, want ErrStarGiftNotFound", err)
 	}
 
-	// CountByOwner（展示在资料 = 非转换、非隐藏）：100 已转换、101 已隐藏、102 仍展示 → 1。
+	// CountByOwner（持有总数 = 活跃且含隐藏，不含已转换）：100 已转换、101 已隐藏、102 仍展示 → 2。
 	n, err := st.CountByOwner(ctx, ownerPeer)
-	if err != nil || n != 1 {
-		t.Fatalf("CountByOwner = %d err %v, want 1 (100 converted, 101 hidden, 102 shown)", n, err)
+	if err != nil || n != 2 {
+		t.Fatalf("CountByOwner = %d err %v, want 2 (100 converted, 101 hidden, 102 shown)", n, err)
 	}
 
 	// 频道礼物用 saved_id 定位，和用户 msg_id 身份键隔离。
