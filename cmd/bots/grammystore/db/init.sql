@@ -18,6 +18,10 @@ CREATE TABLE users (
   updated_at BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
 );
 
+-- One Telegram account per connected {product} account: a positive
+-- server_user_id can be claimed by only one user.
+CREATE UNIQUE INDEX users_server_user_id_uq ON users(server_user_id) WHERE server_user_id > 0;
+
 CREATE TABLE numbers (
   id SERIAL PRIMARY KEY,
   phone TEXT NOT NULL UNIQUE,
@@ -63,6 +67,7 @@ CREATE TABLE pending (
 
 CREATE TABLE processed_payments (
   charge_id TEXT PRIMARY KEY,
+  provider_charge_id TEXT NOT NULL DEFAULT '',
   telegram_id BIGINT NOT NULL,
   invoice_payload TEXT NOT NULL,
   amount INTEGER NOT NULL,
@@ -81,6 +86,7 @@ CREATE TABLE sales (
   buyer_id BIGINT NOT NULL,
   buyer_name TEXT NOT NULL DEFAULT '',
   charge_id TEXT NOT NULL UNIQUE,
+  provider_charge_id TEXT NOT NULL DEFAULT '',
   fulfillment_json JSONB NOT NULL DEFAULT '{}'
 );
 
@@ -165,5 +171,6 @@ CREATE TABLE otp_deliveries (
 );
 
 INSERT INTO settings (key, value) VALUES
-  ('stars_rate', '20')
+  ('stars_rate', '20'),
+  ('number_discount_percent', '0')
 ON CONFLICT (key) DO NOTHING;

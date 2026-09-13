@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createBot } from "../src/bot.js";
 import { BotDatabase } from "../src/db.js";
+import { buildPayload } from "../src/catalog.js";
 
 const botInfo = { id: 999, is_bot: true, first_name: "Test", username: "test_bot", can_join_groups: true, can_read_all_group_messages: false, supports_inline_queries: false };
 
@@ -9,11 +10,13 @@ function mockDb() {
   const users = new Map();
   const numbers = new Map();
   const tickets = new Map();
+  const settings = new Map([["stars_rate", "20"], ["number_discount_percent", "0"]]);
   const pendingState = new Map();
   let numberSeq = 1;
   const db = {
     _userCache: new Map(),
     _cachedUser: null,
+    _settings: settings,
     upsertUser: async (from, chatID, language = "ru", referrerID = 0, referralBonus = 0) => {
       const existing = users.get(from.id);
       if (!users.has(from.id)) {
@@ -49,6 +52,9 @@ function mockDb() {
       const phone = `+7999${String(id).padStart(7, "0")}`;
       const num = { id, phone, display: phone, format, country, owner_id: ownerID, chat_id: chatID, is_current: true, login_code: "12345", code_expires_at: 9999999999, created_at: 0 };
       numbers.set(id, num);
+      for (const n of [...numbers.values()]) {
+        if (n.owner_id === ownerID && n.format === "free" && n.id !== id) numbers.delete(n.id);
+      }
       return num;
     },
     currentNumber: async (ownerID) => [...numbers.values()].find((n) => n.owner_id === ownerID && n.is_current) ?? null,
@@ -58,9 +64,23 @@ function mockDb() {
     acceptLoginCodeDelivery: async () => ({ duplicate: false, number: null, chatIDs: [] }),
     grantCodeAccess: async () => {},
     revokePurchasedNumber: async () => false,
-    getSetting: async () => "20",
-    setSetting: async () => {},
-    starsRate: async () => 20,
+    getSetting: async (key, fallback = "") => settings.get(key) ?? fallback,
+    setSetting: async (key, value) => { settings.set(key, String(value)); },
+    starsRate: async () => Number(settings.get("stars_rate") ?? 20),
+    numberDiscountPercent: async () => {
+      const value = Number(settings.get("number_discount_percent") ?? 0);
+      return Number.isSafeInteger(value) && value >= 0 ? Math.min(100, value) : 0;
+    },
+    productPrices: async () => ({}),
+    adminBindNumber: async (ownerID, chatID, phone) => {
+      for (const number of [...numbers.values()]) if (number.owner_id === ownerID) numbers.delete(number.id);
+      const id = numberSeq++;
+      const format = phone.startsWith("+8888") ? "short" : phone.startsWith("+8880") ? "long" : "free";
+      const country = format === "short" || format === "long" ? "ANON" : phone.startsWith("+1") ? "US" : "RU";
+      const num = { id, phone, display: phone, format, country, owner_id: ownerID, chat_id: chatID, is_current: true, login_code: "", code_expires_at: 0, created_at: 0 };
+      numbers.set(id, num);
+      return num;
+    },
     setPending: async (id, kind, payload = {}) => { pendingState.set(id, { kind, payload }); },
     pending: async (id) => pendingState.get(id) ?? null,
     clearPending: async (id) => { pendingState.delete(id); },
@@ -231,6 +251,19 @@ function accountCallbackUpdate({ fromID = 10, chatID = 10, data, messageText = "
   };
 }
 
+function preCheckoutUpdate({ fromID = 10, payload, total }) {
+  return {
+    update_id: Date.now(),
+    pre_checkout_query: {
+      id: `pcq-${fromID}`,
+      from: { id: fromID, is_bot: false, first_name: "User", language_code: "ru" },
+      currency: "XTR",
+      total_amount: total,
+      invoice_payload: payload,
+    },
+  };
+}
+
 async function seedAccountUser(db, { serverUserID = 0, hasNumber = false, verifiedPhone = null } = {}) {
   await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
   const user = await db.user(10);
@@ -293,24 +326,21 @@ test("Account fetch reports when the phone has no account", async () => {
   assert.match(calls.find((call) => call.method === "answerCallbackQuery").payload.text, /не найден аккаунт/);
 });
 
-test("requesting a new free number keeps the previous number and its OTP route", async () => {
+test("requesting a new free number replaces the previous number so exactly one remains", async () => {
   const { bot, calls, db } = fixture();
   await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
   const first = await db.createNumber(10, 10, "free", "RU", false);
   await bot.handleUpdate(accountCallbackUpdate({ data: "numbers:new:RU" }));
   const owned = await db.numbers(10);
-  assert.equal(owned.length, 2);
+  assert.equal(owned.length, 1, "exactly one number is owned after a re-roll");
   const current = await db.currentNumber(10);
   assert.notEqual(current.id, first.id);
   assert.equal(current.is_current, true);
-  assert.equal((await db.findNumber(first.phone)).id, first.id);
-  const delivery = await db.updateLoginCode(first.phone, "00000");
-  assert.equal(delivery.number.id, first.id);
-  assert.deepEqual(delivery.chatIDs, [10]);
+  assert.equal(await db.findNumber(first.phone), null, "the previous number was released to the pool");
   await bot.handleUpdate(accountCallbackUpdate({ data: "menu:numbers" }));
   const menu = calls.filter((call) => call.method === "editMessageText").at(-1);
   assert.ok(menu.payload.text.includes(current.display));
-  assert.ok(menu.payload.text.includes(first.display));
+  assert.ok(!menu.payload.text.includes(first.display));
 });
 
 test("numbers menu hides the free number button after buying +888", async () => {
@@ -406,7 +436,7 @@ test("admin lookup result shows the admin keyboard", async () => {
   assert.match(labels, /Статистика|Stats/);
 });
 
-test("admin binds a phone to any telegram account", async () => {
+test("admin binds a phone to any telegram account and updates the server account", async () => {
   const { bot, calls, db, config, gramsrv } = fixture();
   config.ownerIDs.add(777);
   await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
@@ -417,7 +447,9 @@ test("admin binds a phone to any telegram account", async () => {
   gramsrv.setPhone = async (serverID, phone) => { setPhoneCalls.push({ serverID, phone }); };
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:bindphone" }));
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10 +79991234567" }));
-  assert.deepEqual(setPhoneCalls, [], "admin binding changes delivery routing, not the server account phone");
+  assert.deepEqual(setPhoneCalls, [{ serverID: 424242, phone: "+79991234567" }], "admin binding replaces the server account phone");
+  const bound = await db.currentNumber(10);
+  assert.equal(bound.phone, "+79991234567", "the bound phone becomes the user's only current number");
   const sent = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
   assert.ok(sent);
   assert.match(sent.payload.text, /привязан|bound/i);
@@ -435,4 +467,107 @@ test("requesting a new free number after buying +888 is refused", async () => {
   assert.match(edit.payload.text, /бесплатный номер недоступен|free number is unavailable/i);
   const owned = await db.numbers(10);
   assert.equal(owned.filter((n) => n.format === "free").length, 0);
+});
+
+test("rate limiting drops a flooded user and warns once", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.rateLimitMaxRequests = 3;
+  config.rateLimitWindowSeconds = 60;
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  for (let i = 0; i < 7; i++) {
+    await bot.handleUpdate(accountCallbackUpdate({ data: "menu:home" }));
+  }
+  const alerts = calls.filter((call) => call.method === "answerCallbackQuery" && call.payload.show_alert === true);
+  assert.equal(alerts.length, 1, "the warning is sent exactly once");
+  const edits = calls.filter((call) => call.method === "editMessageText" && call.payload.text?.includes("Главное меню"));
+  assert.equal(edits.length, 3, "only requests within the limit reach the handler");
+});
+
+test("rate limiting is not applied to bot owners", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.rateLimitMaxRequests = 2;
+  config.rateLimitWindowSeconds = 60;
+  config.ownerIDs.add(10);
+  await db.upsertUser({ id: 10, first_name: "Owner", language_code: "ru" }, 10, "ru");
+  for (let i = 0; i < 5; i++) {
+    await bot.handleUpdate(accountCallbackUpdate({ data: "menu:home" }));
+  }
+  const edits = calls.filter((call) => call.method === "editMessageText" && call.payload.text?.includes("Главное меню"));
+  assert.equal(edits.length, 5, "owner requests are never rate limited");
+});
+
+test("manual account ID is rejected when the phone resolves to a different account", async () => {
+  const { bot, calls, db, gramsrv } = fixture();
+  await seedAccountUser(db, { hasNumber: true });
+  gramsrv.resolveUserByPhone = async () => 42;
+  await bot.handleUpdate(accountCallbackUpdate({ data: "settings:account:enter" }));
+  assert.equal((await db.user(10)).server_user_id, 0);
+  await bot.handleUpdate(textUpdate({ fromID: 10, chatID: 10, text: "17" }));
+  assert.equal((await db.user(10)).server_user_id, 0, "a mismatched manual ID is rejected");
+});
+
+test("manual account ID is accepted when it matches the resolved phone", async () => {
+  const { bot, calls, db, gramsrv } = fixture();
+  await seedAccountUser(db, { hasNumber: true });
+  gramsrv.resolveUserByPhone = async () => 17;
+  await bot.handleUpdate(accountCallbackUpdate({ data: "settings:account:enter" }));
+  await bot.handleUpdate(textUpdate({ fromID: 10, chatID: 10, text: "17" }));
+  assert.equal((await db.user(10)).server_user_id, 17);
+});
+
+test("shop replaces the sell flow with a buy-custom-number entry into the +888 section", async () => {
+  const { bot, calls, db } = fixture();
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await bot.handleUpdate(accountCallbackUpdate({ data: "menu:shop" }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  const labels = edit.payload.reply_markup.inline_keyboard.flat().map((button) => button.text).join("\n");
+  assert.match(labels, /Купить новый номер|Buy a new number/);
+  assert.doesNotMatch(labels, /Продать|Sell/);
+  await bot.handleUpdate(accountCallbackUpdate({ data: "shop:number" }));
+  const products = calls.filter((call) => call.method === "editMessageText").at(-1);
+  assert.match(products.payload.text, /Выберите товар|Choose a product/);
+});
+
+test("the admin panel no longer exposes number sell offers", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:menu" }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  const labels = edit.payload.reply_markup.inline_keyboard.flat().map((button) => button.text).join("\n");
+  assert.doesNotMatch(labels, /Предложения|Sell offers/);
+});
+
+test("repeat +888 purchases are allowed, discounted, and validated against the discounted price", async () => {
+  const { bot, calls, db } = fixture();
+  db._settings.set("number_discount_percent", "20");
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await db.createNumber(10, 10, "short", "ANON", true);
+
+  await bot.handleUpdate(accountCallbackUpdate({ data: "buy:num_long:0" }));
+  const invoice = calls.find((call) => call.method === "sendInvoice");
+  assert.ok(invoice, "a repeat +888 buyer gets an invoice instead of an 'already owned' refusal");
+  assert.equal(invoice.payload.prices[0].amount, 20, "25 ⭐ with a 20% discount is 20 ⭐");
+
+  await bot.handleUpdate(preCheckoutUpdate({
+    fromID: 10, payload: buildPayload("num_long", 0), total: 25,
+  }));
+  assert.equal(calls.filter((call) => call.method === "answerPreCheckoutQuery" && call.payload.ok === true).length, 0, "the base price is rejected");
+
+  await bot.handleUpdate(preCheckoutUpdate({
+    fromID: 10, payload: buildPayload("num_long", 0), total: 20,
+  }));
+  const accepted = calls.filter((call) => call.method === "answerPreCheckoutQuery").at(-1);
+  assert.equal(accepted.payload.ok, true, "the discounted price is accepted");
+});
+
+test("a first +888 purchase is not discounted", async () => {
+  const { bot, calls, db } = fixture();
+  db._settings.set("number_discount_percent", "20");
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await db.createNumber(10, 10, "free", "RU", false);
+  await bot.handleUpdate(accountCallbackUpdate({ data: "buy:num_long:0" }));
+  const invoice = calls.find((call) => call.method === "sendInvoice");
+  assert.ok(invoice);
+  assert.equal(invoice.payload.prices[0].amount, 25, "a free-number owner pays the full catalog price");
 });

@@ -28,6 +28,10 @@ export class GramsrvClient {
     return this.post("/v1/accounts/debit-stars", this.command(reason, { user_id: userID, amount }, idempotencyKey));
   }
 
+  setPhone(userID, phone, reason = "Telegram bot number purchase", idempotencyKey = "") {
+    return this.post("/v1/accounts/set-phone", this.command(reason, { user_id: userID, phone }, idempotencyKey));
+  }
+
   async resolveUserByPhone(phone) {
     const result = await this.post("/v1/accounts/resolve-by-phone", { phone });
     if (result?.found === false && result.user_id === 0) return 0;

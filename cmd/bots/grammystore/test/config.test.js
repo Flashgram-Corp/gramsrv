@@ -5,7 +5,8 @@ import { loadConfig } from "../src/config.js";
 const managedEnv = [
   "BOT_TOKEN", "OWNER_IDS", "GRAMSRV_TOKEN", "CODE_WEBHOOK_SECRET",
   "DEFAULT_LANGUAGE", "DEFAULT_NUMBER_COUNTRY", "REFERRAL_BONUS",
-  "DAILY_BONUS", "NOTIFICATION_TTL_DAYS", "DATABASE_URL", "DATABASE_HOST",
+  "DAILY_BONUS", "NOTIFICATION_TTL_DAYS", "RATE_LIMIT_MAX_REQUESTS",
+  "RATE_LIMIT_WINDOW_SECONDS", "DATABASE_URL", "DATABASE_HOST",
   "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "BOT_MODE",
 ];
 
@@ -31,6 +32,8 @@ test("loadConfig supplies defaults required by runtime bot flows", () => {
   assert.equal(config.referralBonus, 100);
   assert.equal(config.dailyBonus, 15);
   assert.equal(config.notificationTTLDays, 30);
+  assert.equal(config.rateLimitMaxRequests, 120);
+  assert.equal(config.rateLimitWindowSeconds, 60);
   assert.equal(config.botMode, "random");
 });
 
@@ -39,11 +42,14 @@ test("loadConfig validates bonus and notification overrides", () => {
     BOT_TOKEN: "999:TEST", OWNER_IDS: "1", GRAMSRV_TOKEN: "token",
     CODE_WEBHOOK_SECRET: "abcdefghijklmnopqrstuvwxyz", DATABASE_URL: "postgres://localhost/test",
     DEFAULT_LANGUAGE: "en", REFERRAL_BONUS: "7", DAILY_BONUS: "3", NOTIFICATION_TTL_DAYS: "9",
+    RATE_LIMIT_MAX_REQUESTS: "20", RATE_LIMIT_WINDOW_SECONDS: "5",
   }, () => loadConfig());
   assert.equal(config.defaultLanguage, "en");
   assert.equal(config.referralBonus, 7);
   assert.equal(config.dailyBonus, 3);
   assert.equal(config.notificationTTLDays, 9);
+  assert.equal(config.rateLimitMaxRequests, 20);
+  assert.equal(config.rateLimitWindowSeconds, 5);
 });
 
 test("loadConfig rejects placeholder values", () => {

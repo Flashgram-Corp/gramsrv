@@ -53,8 +53,7 @@ type StarGiftStore interface {
 	// ResolveSavedIDs resolves an ordered batch of protocol references without
 	// per-gift round trips. Every ref must belong to owner and resolve to a live gift.
 	ResolveSavedIDs(ctx context.Context, owner domain.Peer, refs []domain.SavedStarGiftRef) ([]int64, error)
-	// CountByOwner 返回某 owner 持有的活跃礼物总数（含隐藏/未展示的），
-	// 供 full.stargifts_count。隐藏只影响列表展示，不减少计数。
+	// CountByOwner 返回某 owner 展示在资料的礼物数（非转换、非隐藏），供 full.stargifts_count。
 	CountByOwner(ctx context.Context, owner domain.Peer) (int, error)
 	// SetUnsaved 切换礼物在资料的展示（saveStarGift）；返回是否命中一行。
 	SetUnsaved(ctx context.Context, ref domain.SavedStarGiftRef, unsaved bool) (bool, error)

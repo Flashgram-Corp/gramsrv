@@ -831,7 +831,7 @@ func (s *StarGiftStore) CountByOwner(ctx context.Context, owner domain.Peer) (in
 		return 0, nil
 	}
 	var n int
-	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM peer_star_gifts WHERE owner_peer_type = $1 AND owner_peer_id = $2 AND lifecycle_status='active'`, string(owner.Type), owner.ID).Scan(&n); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM peer_star_gifts WHERE owner_peer_type = $1 AND owner_peer_id = $2 AND lifecycle_status='active' AND NOT unsaved`, string(owner.Type), owner.ID).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count star gifts: %w", err)
 	}
 	return n, nil

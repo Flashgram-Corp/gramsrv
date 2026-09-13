@@ -31,6 +31,27 @@ function generatedNumber(format, country) {
   return { phone: `+7${code}${tail}`, display: `+7 ${code} ${tail.slice(0, 3)}-${tail.slice(3, 5)}-${tail.slice(5)}`, country: "RU" };
 }
 
+function formatForPhone(phone) {
+  if (/^\+8888\d{3}$/.test(phone)) return { format: "short", country: "ANON" };
+  if (/^\+8880\d{7}$/.test(phone)) return { format: "long", country: "ANON" };
+  if (phone.startsWith("+1")) return { format: "free", country: "US" };
+  return { format: "free", country: "RU" };
+}
+
+function displayForPhone(phone, format, country) {
+  if (format === "short") return `+888 8 ${phone.slice(5)}`;
+  if (format === "long") { const tail = phone.slice(5); return `+888 0${tail.slice(0, 3)} ${tail.slice(3)}`; }
+  if (format === "free" && country === "US") {
+    const match = phone.match(/^\+1(\d{3})(\d{3})(\d{4})$/);
+    if (match) return `+1 (${match[1]}) ${match[2]}-${match[3]}`;
+  }
+  if (format === "free" && country === "RU") {
+    const match = phone.match(/^\+7(\d{3})(\d{7})$/);
+    if (match) return `+7 ${match[1]} ${match[2].slice(0, 3)}-${match[2].slice(3, 5)}-${match[2].slice(5)}`;
+  }
+  return phone;
+}
+
 export class BotDatabase {
   constructor(dbUrl, { generateNumber = generatedNumber } = {}) {
     this.pool = new pg.Pool({ connectionString: dbUrl, max: 10, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000 });
@@ -116,7 +137,12 @@ export class BotDatabase {
   }
 
   async setServerUserID(id, serverUserID) {
-    await this.pool.query("UPDATE users SET server_user_id = $1, updated_at = $2 WHERE telegram_id = $3", [serverUserID, now(), id]);
+    try {
+      await this.pool.query("UPDATE users SET server_user_id = $1, updated_at = $2 WHERE telegram_id = $3", [serverUserID, now(), id]);
+    } catch (error) {
+      if (error.code === "23505" && serverUserID > 0) throw new Error("this server user ID is already bound to another Telegram account");
+      throw error;
+    }
   }
 
   async addBonus(id, amount) {
@@ -141,21 +167,24 @@ export class BotDatabase {
     return this.tx((client) => this.createNumberInTransaction(client, ownerID, chatID, format, country, replace));
   }
 
-  async createNumberInTransaction(client, ownerID, chatID, format, country, replace) {
+  async createNumberInTransaction(client, ownerID, chatID, format, country, replace, allowReplaceAnonymous = false) {
     // Serialize allocations for one owner, including the first allocation.
     const owner = await client.query("SELECT telegram_id FROM users WHERE telegram_id = $1 FOR UPDATE", [ownerID]);
     if (!owner.rowCount) throw new Error("user not found");
     const current = (await client.query("SELECT * FROM numbers WHERE owner_id = $1 AND is_current = TRUE", [ownerID])).rows[0] ?? null;
     if (current && !replace) return current;
-    if (current && current.format !== "free") throw new Error("account already has an active anonymous number");
-    if (format === "free") {
-      const owned = (await client.query("SELECT count(*)::int n FROM numbers WHERE owner_id = $1 AND format = 'free'", [ownerID])).rows[0].n;
-      if (owned >= 10) throw new Error("free number reservation limit reached");
-    }
+    if (current && current.format !== "free" && (!allowReplaceAnonymous || format === "free")) throw new Error("account already has an active anonymous number");
     if (current) {
-      // Client-confirmed phone changes may not have finished yet. Keep the
-      // previous number reserved to this owner and its OTP route alive.
-      await client.query("UPDATE numbers SET is_current = FALSE WHERE id = $1", [current.id]);
+      if (current.format !== "free") {
+        // A repeat +888 purchase replaces the previous +888, which is retired
+        // forever (never recycled) instead of being released to the pool.
+        await client.query("UPDATE numbers SET is_current = FALSE, retired = TRUE WHERE id = $1", [current.id]);
+      } else {
+        // The previous number is released to the pool when the replacement
+        // commits (see the DELETE below); the demote keeps the unique
+        // one-current-per-owner index consistent inside the transaction.
+        await client.query("UPDATE numbers SET is_current = FALSE WHERE id = $1", [current.id]);
+      }
     }
     for (let attempt = 0; attempt < 400; attempt++) {
       const generated = this.generateNumber(format, country);
@@ -167,7 +196,14 @@ export class BotDatabase {
          ON CONFLICT(phone) DO NOTHING RETURNING *`,
         [generated.phone, generated.display, format, generated.country, ownerID, chatID, now()]
       );
-      if (result.rowCount) return result.rows[0];
+      if (result.rowCount) {
+        // Enforce a single active number per owner: any previously owned free
+        // numbers (reserved by earlier re-rolls or the free allocation) are
+        // released to the pool. Runs after the insert so failed allocations
+        // roll back the whole replacement and preserve the previous number.
+        await client.query("DELETE FROM numbers WHERE owner_id = $1 AND format = 'free' AND id <> $2", [ownerID, result.rows[0].id]);
+        return result.rows[0];
+      }
     }
     throw new Error("could not generate a unique number");
   }
@@ -247,7 +283,8 @@ export class BotDatabase {
   async revokePurchasedNumber(ownerID, numberID, phone, resolveUserByPhone) {
     if (typeof resolveUserByPhone !== "function") throw new Error("account lookup is required for number refunds");
     return this.tx(async (client) => {
-      await client.query("SELECT telegram_id FROM users WHERE telegram_id = $1 FOR UPDATE", [ownerID]);
+      const user = (await client.query("SELECT telegram_id, chat_id FROM users WHERE telegram_id = $1 FOR UPDATE", [ownerID])).rows[0];
+      if (!user) throw new Error("owner not found");
       const number = (await client.query("SELECT * FROM numbers WHERE id = $1 AND owner_id = $2 AND phone = $3 FOR UPDATE", [numberID, ownerID, normalizePhone(phone)])).rows[0];
       if (!number) throw new Error("purchased number not found");
       if (number.retired) return false;
@@ -259,9 +296,41 @@ export class BotDatabase {
       await client.query("DELETE FROM code_access WHERE phone = $1", [number.phone]);
       await client.query("UPDATE numbers SET retired = TRUE, is_current = FALSE, login_code = '', code_expires_at = 0 WHERE id = $1", [number.id]);
       if (number.is_current) {
-        await client.query("UPDATE numbers SET is_current = TRUE WHERE id = (SELECT id FROM numbers WHERE owner_id = $1 AND format = 'free' AND retired = FALSE ORDER BY id DESC LIMIT 1)", [ownerID]);
+        const restored = await client.query("UPDATE numbers SET is_current = TRUE WHERE id = (SELECT id FROM numbers WHERE owner_id = $1 AND format = 'free' AND retired = FALSE ORDER BY id DESC LIMIT 1) RETURNING id", [ownerID]);
+        if (restored.rowCount === 0) await this.createNumberInTransaction(client, ownerID, user.chat_id, "free", "RU", false);
       }
       return true;
+    });
+  }
+
+  async duplicateNumberOwners() {
+    const res = await this.pool.query(
+      `SELECT owner_id FROM numbers WHERE retired = FALSE
+       GROUP BY owner_id
+       HAVING count(*) > 1`
+    );
+    return res.rows.map((row) => row.owner_id);
+  }
+
+  async cleanupDuplicateNumbers(ownerID, keepID) {
+    return this.tx(async (client) => {
+      await client.query("SELECT telegram_id FROM users WHERE telegram_id = $1 FOR UPDATE", [ownerID]);
+      const owned = (await client.query("SELECT * FROM numbers WHERE owner_id = $1 AND retired = FALSE", [ownerID])).rows;
+      const keep = owned.find((number) => number.id === keepID) ?? owned.find((number) => number.is_current) ?? null;
+      if (!keep) return { removed: 0, retired: 0, keptPhone: null };
+      let removed = 0, retired = 0;
+      for (const number of owned) {
+        if (number.id === keep.id) continue;
+        if (number.format === "free") {
+          await client.query("DELETE FROM numbers WHERE id = $1", [number.id]);
+          removed++;
+        } else {
+          await client.query("UPDATE numbers SET is_current = FALSE, retired = TRUE WHERE id = $1", [number.id]);
+          retired++;
+        }
+      }
+      if (!keep.is_current) await client.query("UPDATE numbers SET is_current = TRUE WHERE id = $1", [keep.id]);
+      return { removed, retired, keptPhone: keep.phone };
     });
   }
 
@@ -277,6 +346,30 @@ export class BotDatabase {
   async starsRate() {
     const value = Number(await this.getSetting("stars_rate", "20"));
     return Number.isSafeInteger(value) && value > 0 ? value : 20;
+  }
+
+  async numberDiscountPercent() {
+    const value = Number(await this.getSetting("number_discount_percent", "0"));
+    return Number.isSafeInteger(value) && value >= 0 ? Math.min(100, value) : 0;
+  }
+
+  async productPrices() {
+    const res = await this.pool.query("SELECT key, value FROM settings WHERE key LIKE 'price_%'");
+    const prices = {};
+    for (const row of res.rows) {
+      const code = String(row.key).slice(6);
+      const value = Number(row.value);
+      if (code && Number.isSafeInteger(value) && value > 0 && value <= 100000) prices[code] = value;
+    }
+    return prices;
+  }
+
+  async setProductPrice(code, price) {
+    if (!price) {
+      await this.pool.query("DELETE FROM settings WHERE key = $1", [`price_${code}`]);
+      return;
+    }
+    await this.setSetting(`price_${code}`, price);
   }
 
   async setPending(id, kind, payload = {}) {
@@ -391,7 +484,7 @@ export class BotDatabase {
     });
   }
 
-  async beginPayment(chargeID, telegramID, payload, amount) {
+  async beginPayment(chargeID, telegramID, payload, amount, providerChargeID = "") {
     return this.tx(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`payment:${chargeID}`]);
       const row = (await client.query("SELECT * FROM processed_payments WHERE charge_id = $1", [chargeID])).rows[0];
@@ -399,10 +492,11 @@ export class BotDatabase {
       if (row?.status === "done") return false;
       if (row?.status === "processing" && row.updated_at > now() - 300) return false;
       await client.query(
-        `INSERT INTO processed_payments(charge_id, telegram_id, invoice_payload, amount, status, updated_at)
-         VALUES($1, $2, $3, $4, 'processing', $5)
-         ON CONFLICT(charge_id) DO UPDATE SET status = 'processing', error = '', updated_at = EXCLUDED.updated_at`,
-        [chargeID, telegramID, payload, amount, now()]
+        `INSERT INTO processed_payments(charge_id, provider_charge_id, telegram_id, invoice_payload, amount, status, updated_at)
+         VALUES($1, $2, $3, $4, $5, 'processing', $6)
+         ON CONFLICT(charge_id) DO UPDATE SET provider_charge_id = CASE WHEN processed_payments.provider_charge_id = '' THEN EXCLUDED.provider_charge_id ELSE processed_payments.provider_charge_id END,
+         status = 'processing', error = '', updated_at = EXCLUDED.updated_at`,
+        [chargeID, String(providerChargeID ?? ""), telegramID, payload, amount, now()]
       );
       return true;
     });
@@ -422,9 +516,9 @@ export class BotDatabase {
 
   async insertSale(client, sale) {
     await client.query(
-      `INSERT INTO sales(created_at, product, title, stars_price, recipient_id, buyer_id, buyer_name, charge_id, fulfillment_json)
-       VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING`,
-      [now(), sale.product, sale.title, sale.starsPrice, sale.recipientID, sale.buyerID, sale.buyerName ?? "", sale.chargeID, JSON.stringify(sale.fulfillment ?? {})]
+      `INSERT INTO sales(created_at, product, title, stars_price, recipient_id, buyer_id, buyer_name, charge_id, provider_charge_id, fulfillment_json)
+       VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING`,
+      [now(), sale.product, sale.title, sale.starsPrice, sale.recipientID, sale.buyerID, sale.buyerName ?? "", sale.chargeID, String(sale.providerChargeID ?? ""), JSON.stringify(sale.fulfillment ?? {})]
     );
   }
 
@@ -434,8 +528,9 @@ export class BotDatabase {
 
   async fulfillNumberPurchase(sale, chatID, format) {
     return this.tx(async (client) => {
+      const ownerGrant = sale.chargeID.startsWith("owner-");
       const payment = (await client.query("SELECT * FROM processed_payments WHERE charge_id = $1 FOR UPDATE", [sale.chargeID])).rows[0];
-      if (!payment || payment.telegram_id !== sale.buyerID || payment.amount !== sale.starsPrice) throw new Error("IDEMPOTENCY_CONFLICT");
+      if (!ownerGrant && (!payment || payment.telegram_id !== sale.buyerID || payment.amount !== sale.starsPrice)) throw new Error("IDEMPOTENCY_CONFLICT");
       const existing = (await client.query("SELECT * FROM sales WHERE charge_id = $1", [sale.chargeID])).rows[0];
       if (existing) {
         if (existing.buyer_id !== sale.buyerID || existing.product !== sale.product || existing.stars_price !== sale.starsPrice) throw new Error("IDEMPOTENCY_CONFLICT");
@@ -443,7 +538,7 @@ export class BotDatabase {
         if (!number) throw new Error("recorded purchased number is missing");
         return number;
       }
-      const number = await this.createNumberInTransaction(client, sale.buyerID, chatID, format, "ANON", true);
+      const number = await this.createNumberInTransaction(client, sale.buyerID, chatID, format, "ANON", true, true);
       const fulfillment = { kind: "number", ownerID: sale.buyerID, numberID: number.id, phone: number.phone, format: number.format };
       await this.insertSale(client, { ...sale, recipientID: sale.buyerID, fulfillment });
       await client.query("UPDATE processed_payments SET status = 'done', error = '', updated_at = $1 WHERE charge_id = $2", [now(), sale.chargeID]);
@@ -451,10 +546,13 @@ export class BotDatabase {
     });
   }
 
-  async saleByCharge(chargeID) {
+  async saleByCharge(query) {
     const res = await this.pool.query(
-      "SELECT s.*, p.invoice_payload, p.status AS payment_status FROM sales s LEFT JOIN processed_payments p ON p.charge_id = s.charge_id WHERE s.charge_id = $1",
-      [chargeID]
+      `SELECT s.*, p.invoice_payload, p.status AS payment_status
+       FROM sales s LEFT JOIN processed_payments p ON p.charge_id = s.charge_id
+       WHERE s.charge_id = $1 OR s.provider_charge_id = $1
+       ORDER BY (s.charge_id = $1) DESC LIMIT 1`,
+      [query]
     );
     const row = res.rows[0];
     if (!row) return null;
@@ -464,6 +562,29 @@ export class BotDatabase {
       row.fulfillment = row.fulfillment_json || {};
     }
     return row;
+  }
+
+  async refundTargetByCharge(query) {
+    const sale = await this.saleByCharge(query);
+    if (sale) return sale;
+    const res = await this.pool.query(
+      `SELECT * FROM processed_payments
+       WHERE charge_id = $1 OR provider_charge_id = $1
+       ORDER BY (charge_id = $1) DESC LIMIT 1`,
+      [query]
+    );
+    const payment = res.rows[0];
+    if (!payment) return null;
+    return {
+      charge_id: payment.charge_id,
+      product: "custom",
+      title: "",
+      buyer_id: payment.telegram_id,
+      invoice_payload: payment.invoice_payload,
+      payment_status: payment.status,
+      fulfillment: { kind: "custom" },
+      synthetic: true,
+    };
   }
 
   async recentSales(limit = 20) {
@@ -541,7 +662,14 @@ export class BotDatabase {
   async bindVerifiedPhone(telegramID, chatID, phone) {
     const formatted = normalizePhone(phone);
     return this.tx(async (client) => {
+      // If the phone was bound to another Telegram account, that account's
+      // delivery route is gone; drop its server_user_id so it can never keep
+      // referencing (and receiving grants for) a number it no longer owns.
+      const previous = (await client.query("SELECT telegram_id FROM verified_phones WHERE phone = $1", [formatted])).rows[0] ?? null;
       await client.query("DELETE FROM verified_phones WHERE phone = $1", [formatted]);
+      if (previous && previous.telegram_id !== telegramID) {
+        await client.query("UPDATE users SET server_user_id = 0, updated_at = $1 WHERE telegram_id = $2", [now(), previous.telegram_id]);
+      }
       const res = await client.query(
         `INSERT INTO verified_phones(phone, telegram_id, chat_id, verified_at) VALUES($1, $2, $3, $4)
          ON CONFLICT(telegram_id) DO UPDATE SET phone = EXCLUDED.phone, chat_id = EXCLUDED.chat_id, verified_at = EXCLUDED.verified_at
@@ -555,6 +683,36 @@ export class BotDatabase {
   async unbindVerifiedPhone(telegramID) {
     const res = await this.pool.query("DELETE FROM verified_phones WHERE telegram_id = $1", [telegramID]);
     return res.rowCount > 0;
+  }
+
+  // --- Admin number binding (replaces every previously owned number) ---
+
+  async adminBindNumber(ownerID, chatID, phone) {
+    const formatted = normalizePhone(phone);
+    if (!/^\+[1-9]\d{6,14}$/.test(formatted)) throw new Error("invalid phone number");
+    return this.tx(async (client) => {
+      const user = (await client.query("SELECT telegram_id, chat_id FROM users WHERE telegram_id = $1", [ownerID])).rows[0];
+      if (!user) throw new Error("user not found");
+      await client.query("SELECT telegram_id FROM users WHERE telegram_id = $1 FOR UPDATE", [ownerID]);
+      const owned = (await client.query("SELECT * FROM numbers WHERE owner_id = $1 AND retired = FALSE", [ownerID])).rows;
+      const { format, country } = formatForPhone(formatted);
+      for (const number of owned) {
+        if (number.format === "free") {
+          await client.query("DELETE FROM numbers WHERE id = $1", [number.id]);
+        } else {
+          await client.query("UPDATE numbers SET is_current = FALSE, retired = TRUE WHERE id = $1", [number.id]);
+        }
+      }
+      const display = displayForPhone(formatted, format, country);
+      const result = await client.query(
+        `INSERT INTO numbers(phone, display, format, country, owner_id, chat_id, is_current, login_code, code_expires_at, created_at)
+         VALUES($1, $2, $3, $4, $5, $6, TRUE, '', 0, $7)
+         ON CONFLICT(phone) DO NOTHING RETURNING *`,
+        [formatted, display, format, country, ownerID, chatID ?? user.chat_id, now()]
+      );
+      if (!result.rowCount) throw new Error("phone is already allocated to another owner");
+      return result.rows[0];
+    });
   }
 
   // --- Admin exact lookups (no dumps) ---
