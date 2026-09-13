@@ -6,7 +6,7 @@ import { api, errorMessage } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Alert, Badge, EmptyRow, Metric, PageFrame, QueryPanel } from "../components/ui";
 import { useI18n } from "../i18n";
-import { formatDate, localInputValue, toUnixSeconds } from "../lib/format";
+import { formatDate, localInputValue, titleFromFilename, toUnixSeconds } from "../lib/format";
 import type { CommandResult, OfficialStarGiftRow, StarGiftRow } from "../types";
 import { GiftCollectiblesModal } from "./GiftCollectiblesModal";
 
@@ -406,7 +406,12 @@ export function GiftsPage() {
               </section> : <>
                 <div className="gift-import-note"><span>{t("gifts.importHint")}</span><div className="gift-format-chips" aria-label={t("gifts.formats")}><span>TGS</span><span>Lottie JSON</span></div></div>
                 <label className={`gift-file-picker ${file ? "has-file" : ""}`}>
-                  <input type="file" accept=".tgs,.json,.lottie,application/json,application/x-tgsticker" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); }} />
+                  <input type="file" accept=".tgs,.json,.lottie,application/json,application/x-tgsticker" onChange={(e) => {
+                    const next = e.target.files?.[0] ?? null;
+                    setFile(next);
+                    setPreview(null);
+                    if (next && !title) setTitle(titleFromFilename(next.name));
+                  }} />
                   <span className="gift-file-icon"><FileJson2 size={22} /></span>
                   <span className="gift-file-copy"><span className="gift-field-label">{t("gifts.animation")}</span><strong>{file ? file.name : t("gifts.filePrompt")}</strong><small>{file ? formatBytes(file.size) : t("gifts.fileHint")}</small></span>
                   <span className="gift-file-action">{file ? t("gifts.changeFile") : t("gifts.chooseFile")}</span>

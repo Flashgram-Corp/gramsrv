@@ -4,7 +4,7 @@ import { createPortal } from "react-dom";
 import { api, errorMessage } from "../api";
 import { Alert, Badge, EmptyRow, Metric, PageFrame } from "../components/ui";
 import { useI18n, type TFunction } from "../i18n";
-import { formatUnix, localInputValue, toUnixSeconds } from "../lib/format";
+import { formatUnix, localInputValue, titleFromFilename, toUnixSeconds } from "../lib/format";
 import type { CommandResult, StarGiftAuctionRow } from "../types";
 import { LottiePreview } from "./GiftsPage";
 
@@ -308,7 +308,12 @@ function AuthorModal({ mode, onClose, onCreated }: { mode: AuthorMode; onClose: 
         <div className="command-body">
           <div className="gift-import-note"><span>{mode === "auction" ? t("gifts.lifecycle.hintAuction") : t("gifts.lifecycle.hintDrop")}</span></div>
           <label className={`gift-file-picker ${file ? "has-file" : ""}`}>
-            <input type="file" accept=".tgs,.json,application/json" onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); }} />
+            <input type="file" accept=".tgs,.json,application/json" onChange={(e) => {
+              const next = e.target.files?.[0] ?? null;
+              setFile(next);
+              setPreview(null);
+              if (next && !title) setTitle(titleFromFilename(next.name));
+            }} />
             <span className="gift-file-copy"><strong>{file?.name ?? t("gifts.chooseFile")}</strong></span>
             <span className="gift-file-action">{file ? t("gifts.changeFile") : t("common.choose")}</span>
           </label>
