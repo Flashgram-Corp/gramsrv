@@ -243,6 +243,16 @@ async function hasActiveAnonymousNumber(db, ownerID) {
   return Boolean(current && current.format !== "free");
 }
 
+async function freeDailyLimitReached(ctx, db, language) {
+  const limit = await db.freeNumberDailyLimit();
+  if (!(limit > 0)) return false;
+  if (await db.freeNumberDailyCount(ctx.from.id) >= limit) {
+    await editOrReply(ctx, translate(language, "errorFreeDailyLimit"), backKeyboard(language, "menu:numbers"));
+    return true;
+  }
+  return false;
+}
+
 async function sendInvoice(ctx, product, targetUserID, language, extra = "") {
   const localized = localizeProduct(product, language);
   const starsAmount = product.kind === KINDS.stars ? product.starsAmount : 0;
@@ -572,6 +582,7 @@ export function createBot({ config, db, gramsrv }) {
     if (await hasActiveAnonymousNumber(db, ctx.from.id)) {
       return editOrReply(ctx, tr(ctx.from.id, "freeNumberUnavailable"), backKeyboard(language, "menu:numbers"));
     }
+    if (await freeDailyLimitReached(ctx, db, language)) return;
     const kb = new InlineKeyboard().text(tr(ctx.from.id, "countryRU"), "numbers:new:RU").text(tr(ctx.from.id, "countryUS"), "numbers:new:US").row().text(tr(ctx.from.id, "back"), "menu:numbers");
     await editOrReply(ctx, tr(ctx.from.id, "chooseCountry"), kb);
   });
@@ -583,6 +594,7 @@ export function createBot({ config, db, gramsrv }) {
     if (await hasActiveAnonymousNumber(db, ctx.from.id)) {
       return editOrReply(ctx, tr(ctx.from.id, "freeNumberUnavailable"), backKeyboard(language, "menu:numbers"));
     }
+    if (await freeDailyLimitReached(ctx, db, language)) return;
     try {
       const number = await db.createNumber(ctx.from.id, ctx.chat.id, "free", ctx.match[1], true);
       await editOrReply(ctx, tr(ctx.from.id, "newNumber", { phone: escapeHTML(number.display) }), backKeyboard(language, "menu:numbers"));
@@ -819,6 +831,7 @@ export function createBot({ config, db, gramsrv }) {
         return `<code>${p.code}</code> · ${escapeHTML(p.title)}: <b>${current} ⭐</b>${escapeHTML(override)}`;
       });
       lines.push(`${translate(language, "adminDiscountLine")}: <b>${await db.numberDiscountPercent()}%</b>`);
+      lines.push(`${translate(language, "adminFreeLimitLine")}: <b>${await db.freeNumberDailyLimit()}</b>`);
       await db.setPending(ctx.from.id, "admin_prices");
       return editOrReply(ctx, `${tr(ctx.from.id, "adminPromptPrices", { rate: String(starsRate) })}\n\n${lines.join("\n")}`, backKeyboard(language, "admin:menu"));
     }
@@ -1099,6 +1112,9 @@ export function createBot({ config, db, gramsrv }) {
           } else if (codeRaw === "discount") {
             if (value > 100) throw new Error("invalid discount");
             await db.setSetting("number_discount_percent", value);
+            updated++;
+          } else if (codeRaw === "free") {
+            await db.setSetting("free_number_daily_limit", value);
             updated++;
           } else {
             if (!overridable.has(codeRaw)) throw new Error("unknown product code");

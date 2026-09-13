@@ -10,7 +10,7 @@ function mockDb() {
   const users = new Map();
   const numbers = new Map();
   const tickets = new Map();
-  const settings = new Map([["stars_rate", "20"], ["number_discount_percent", "0"]]);
+  const settings = new Map([["stars_rate", "20"], ["number_discount_percent", "0"], ["free_number_daily_limit", "0"]]);
   const pendingState = new Map();
   let numberSeq = 1;
   const db = {
@@ -20,7 +20,7 @@ function mockDb() {
     upsertUser: async (from, chatID, language = "ru", referrerID = 0, referralBonus = 0) => {
       const existing = users.get(from.id);
       if (!users.has(from.id)) {
-        users.set(from.id, { telegram_id: from.id, chat_id: chatID, username: from.username ?? "", first_name: from.first_name ?? "", server_user_id: 0, language, notifications: 1, bonus: 0, referred_by: null, referral_count: 0, daily_day: "", spin_day: "", spin_day_count: 0, spin_week: "", spin_week_count: 0, created_at: 0, updated_at: 0 });
+        users.set(from.id, { telegram_id: from.id, chat_id: chatID, username: from.username ?? "", first_name: from.first_name ?? "", server_user_id: 0, language, notifications: 1, bonus: 0, referred_by: null, referral_count: 0, daily_day: "", spin_day: "", spin_day_count: 0, spin_week: "", spin_week_count: 0, free_day: "", free_day_count: 0, created_at: 0, updated_at: 0 });
       }
       const user = users.get(from.id);
       user.chat_id = chatID;
@@ -70,6 +70,15 @@ function mockDb() {
     numberDiscountPercent: async () => {
       const value = Number(settings.get("number_discount_percent") ?? 0);
       return Number.isSafeInteger(value) && value >= 0 ? Math.min(100, value) : 0;
+    },
+    freeNumberDailyLimit: async () => {
+      const value = Number(settings.get("free_number_daily_limit") ?? 0);
+      return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+    },
+    freeNumberDailyCount: async (id) => {
+      const u = users.get(id);
+      if (!u || typeof u.free_day_count !== "number") return 0;
+      return u.free_day_count;
     },
     productPrices: async () => ({}),
     adminBindNumber: async (ownerID, chatID, phone) => {
@@ -570,4 +579,35 @@ test("a first +888 purchase is not discounted", async () => {
   const invoice = calls.find((call) => call.method === "sendInvoice");
   assert.ok(invoice);
   assert.equal(invoice.payload.prices[0].amount, 25, "a free-number owner pays the full catalog price");
+});
+
+test("admin can set and see the daily free number limit in the prices panel", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:prices" }));
+  const prompt = calls.filter((call) => call.method === "editMessageText").at(-1);
+  assert.match(prompt.payload.text, /\bfree N\b/, "the panel documents the free limit command");
+  assert.match(prompt.payload.text, /Дневной лимит смены бесплатного номера/);
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "free 3" }));
+  assert.equal(db._settings.get("free_number_daily_limit"), "3");
+  const saved = calls.filter((call) => call.method === "sendMessage").find((call) => /Обновлено позиций: 1|Updated 1 item/.test(call.payload.text));
+  assert.ok(saved, "the admin is told the price entry was applied");
+});
+
+test("users at the daily free limit get a notice instead of the country menu", async () => {
+  const { bot, calls, db } = fixture();
+  db._settings.set("free_number_daily_limit", "1");
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await db.createNumber(10, 10, "free", "RU", false);
+  const user = await db.user(10);
+  user.free_day_count = 1;
+  await bot.handleUpdate(accountCallbackUpdate({ data: "numbers:new" }));
+  const blocked = calls.filter((call) => call.method === "editMessageText").at(-1);
+  assert.match(blocked.payload.text, /дневной лимит смены бесплатного номера|daily free number change limit/i);
+  assert.doesNotMatch(blocked.payload.text, /Выберите страну|Choose a country/);
+  user.free_day_count = 0;
+  await bot.handleUpdate(accountCallbackUpdate({ data: "numbers:new" }));
+  const menu = calls.filter((call) => call.method === "editMessageText").at(-1);
+  assert.match(menu.payload.text, /Выберите страну|Choose a country/);
 });

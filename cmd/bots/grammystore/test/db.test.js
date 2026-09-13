@@ -181,6 +181,28 @@ test("number discount percent setting is clamped to a sane range", async () => {
   assert.equal(await db.numberDiscountPercent(), 0);
 });
 
+test("free number daily limit blocks extra re-rolls, resets on a fresh day and leaves purchases unlimited", async () => {
+  if (!db) return;
+  await cleanTable("settings"); await cleanTable("numbers"); await cleanTable("users");
+  await db.setSetting("free_number_daily_limit", "2");
+  await db.upsertUser({ id: 43, first_name: "Roller" }, 430, "ru");
+  const first = await db.createNumber(43, 430, "free", "RU", false);
+  const second = await db.createNumber(43, 430, "free", "RU", true);
+  assert.notEqual(second.phone, first.phone, "re-roll produced a replacement number");
+  assert.equal(await db.freeNumberDailyCount(43), 2);
+  await assert.rejects(() => db.createNumber(43, 430, "free", "RU", true), /free number daily limit reached/);
+  assert.equal(await db.freeNumberDailyCount(43), 2, "a rejected re-roll does not consume the allowance");
+  await db.pool.query("UPDATE users SET free_day = '2099-01-01' WHERE telegram_id = 43");
+  assert.equal(await db.freeNumberDailyCount(43), 0, "a stale day reads as zero");
+  const third = await db.createNumber(43, 430, "free", "RU", true);
+  assert.ok(third, "a stale-day counter resets and allows another roll");
+  assert.equal(await db.freeNumberDailyCount(43), 1);
+  const paid = await db.createNumber(43, 430, "short", "ANON", true);
+  assert.ok(paid.phone, "purchased numbers are not subject to the free limit");
+  const unset = await db.getSetting("free_number_daily_limit", "default");
+  assert.equal(unset, "2");
+});
+
 test("language and notification preferences persist and broadcasts honor them", async () => {
   if (!db) return;
   await cleanTable("users");
