@@ -45,9 +45,11 @@ function mockDb() {
     acceptLoginCodeDelivery: async () => ({ duplicate: false, number: null, chatIDs: [] }),
     grantCodeAccess: async () => {},
     revokePurchasedNumber: async () => false,
-    getSetting: async () => "20",
+    getSetting: async (key, fallback = "") => (key === "number_discount_percent" ? "0" : fallback),
     setSetting: async () => {},
     starsRate: async () => 20,
+    numberDiscountPercent: async () => 0,
+    productPrices: async () => ({}),
     setPending: async () => {},
     pending: async () => null,
     clearPending: async () => {},
@@ -256,7 +258,7 @@ test("real mode unbind answers once and re-renders the numbers view", async () =
   assert.equal(await db.verifiedPhone(10), null);
 });
 
-test("real mode rejects a second anonymous number purchase", async () => {
+test("real mode lets an existing +888 owner buy a replacement at the configured price", async () => {
   const { bot, calls, db } = createBotWithMode("real");
   await db.upsertUser({ id: 10, first_name: "User" }, 10, "ru");
   await db.createNumber(10, 10, "short", "ANON", true);
@@ -268,9 +270,9 @@ test("real mode rejects a second anonymous number purchase", async () => {
       message: { message_id: 1, date: 1, chat: { id: 10, type: "private" }, text: "Product" },
     },
   });
-  const sent = calls.find((c) => c.method === "sendMessage");
-  assert.match(sent.payload.text, /already have|уже есть/i);
-  assert.equal(calls.some((c) => c.method === "sendInvoice"), false);
+  const invoice = calls.find((c) => c.method === "sendInvoice");
+  assert.ok(invoice, "a repeat +888 purchase proceeds to an invoice");
+  assert.equal(invoice.payload.prices[0].amount, 50, "no discount configured means full catalog price");
 });
 
 test("real mode allows shop for non-number products", async () => {

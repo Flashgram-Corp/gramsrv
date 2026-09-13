@@ -73,5 +73,7 @@ export function loadConfig() {
     referralBonus: integer("REFERRAL_BONUS", 100, { min: 0 }),
     dailyBonus: integer("DAILY_BONUS", 15, { min: 0 }),
     notificationTTLDays: integer("NOTIFICATION_TTL_DAYS", 30, { min: 1 }),
+    rateLimitMaxRequests: integer("RATE_LIMIT_MAX_REQUESTS", 120, { min: 1 }),
+    rateLimitWindowSeconds: integer("RATE_LIMIT_WINDOW_SECONDS", 60, { min: 1 }),
   });
 }

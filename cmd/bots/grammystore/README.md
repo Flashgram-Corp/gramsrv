@@ -9,6 +9,7 @@ independently from the main MTProto server; a bot outage cannot stop MTProto.
 - real-number mode: users bind their actual Telegram phone via contact sharing;
 - delivery and storage of real login codes through authenticated `POST /code`;
 - free replacement numbers and paid anonymous `+888` numbers (random mode);
+  repeat `+888` purchases replace the previous number at an admin-configured discount;
 - Premium, server Stars and collectible username purchases through Telegram Stars;
 - arbitrary Stars invoices, payment deduplication and a durable sales journal;
 - compensated refunds that revoke the exact Stars, Premium entitlement,
@@ -20,7 +21,8 @@ independently from the main MTProto server; a bot outage cannot stop MTProto.
 - complete Russian and English localization;
 - per-user language and notification settings;
 - owner-only statistics, broadcasts, Stars/Premium/bonus grants, invoices,
-  payment refunds, login-code access, support replies, Stars-rate controls;
+  payment refunds, login-code access, support replies, Stars-rate and store item
+  price controls, repeat-purchase discount and number binding for any user;
 - admin exact lookup by Telegram ID or phone number (no data dumps);
 - optional required-channel membership gate;
 - optional SOCKS5 proxy for Telegram API (for regions where Telegram is blocked).
@@ -153,9 +155,11 @@ Telegram without a proxy.
 
 **Random mode** (`BOT_MODE=random`, default):
 - Users receive a randomly generated phone number on `/start`.
-- Each Telegram user has one current number; previous free numbers remain reserved
-  and keep receiving codes until the user completes any client-side phone change.
-- Free-number reservations are limited to 10 per user; old numbers are not recycled.
+- Each Telegram user owns exactly one number at a time: requesting a free
+  replacement releases the previous free number, and buying a `+888` replaces
+  the current number. A repeat `+888` purchase retires the old `+888` (it is
+  never recycled) and rebinds the server account to the new number.
+- Free-number reservations are limited to 10 per user; retired numbers are not recycled.
 - Numbers persist across bot restarts.
 
 **Real mode** (`BOT_MODE=real`):
@@ -163,12 +167,17 @@ Telegram without a proxy.
 - Random number generation is rejected server-side.
 - The bound phone is stored in PostgreSQL and survives restarts.
 
-In both modes, purchasing a number only reserves it. Change an existing account's
-phone in your **signed-in client** and enter the verification code delivered by
-the bot. Neither manual account IDs nor owner phone-binding commands change the
-server account phone. Existing real-phone and free-number code routes are retained.
+In both modes, purchasing a number only reserves it and atomically records the
+allocation, sale and completed payment. Ordinary user flows never call the server
+set-phone API; the server account phone changes only on purchase/retention rebind
+or the owner's explicit number-binding command. Existing real-phone and free
+routes are retained until they are replaced.
 
-Number purchases atomically record the allocation, sale and completed payment.
+The shop sells numbers only — there is no buyback and no sell-offer flow. A user
+who already owns a `+888` sees "Buy a new number" and pays a repeat-purchase
+discount, set by the owner as `number_discount_percent` via the prices panel
+(effective price `max(1, round(base × (100 − discount) / 100))`). Number purchases
+atomically record the allocation, sale and completed payment.
 For a stored number payment interrupted by a database/process failure, an owner
 can use `/retry_payment <charge_id>` without charging the customer again.
 Before refunding a number, change away from it in the client and wait for issued
@@ -176,7 +185,11 @@ verification codes to expire. The bot requires a successful server lookup showin
 no account still uses it. Refunded numbers are retired permanently, never recycled.
 See [number lifecycle and verification invariants](NUMBER_LIFECYCLE.md).
 
-Existing PostgreSQL deployments must apply `db/migrations/001-number-retirement.sql`
+Existing PostgreSQL deployments must apply `db/migrations/001-number-retirement.sql`,
+`db/migrations/002-refund-provider-charge.sql`,
+`db/migrations/003-users-server-user-id-unique.sql`,
+`db/migrations/004-number-offers.sql` and
+`db/migrations/005-drop-number-offers.sql`
 before upgrading (fresh deployments use the updated `db/init.sql`). Back up the
 database first. The migration does not repair unsafe pre-release ownership state.
 Local images use an allowlisted build context; `.env` is provided only at runtime.

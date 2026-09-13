@@ -1,6 +1,6 @@
 import { Bot, GrammyError, HttpError, InlineKeyboard } from "grammy";
 import { randomInt } from "node:crypto";
-import { buildPayload, findProduct, KINDS, localizeProduct, normalizeUsername, parsePayload, productsOfKind } from "./catalog.js";
+import { buildPayload, catalog, findProduct, KINDS, localizeProduct, normalizeUsername, parsePayload, productsOfKind } from "./catalog.js";
 import { normalizeLanguage, translate, translateError } from "./i18n.js";
 import { isRandomMode, isRealMode, rejectRandomInRealMode } from "./real-number.js";
 import { createProxyAgent, describeProxy } from "./proxy.js";
@@ -14,6 +14,11 @@ function escapeHTML(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
+async function catalogContext(db) {
+  const [starsRate, prices] = await Promise.all([db.starsRate(), db.productPrices()]);
+  return { starsRate, prices };
+}
+
 function initialLanguage(from, fallback) { return normalizeLanguage(from?.language_code, fallback); }
 function isOwner(config, id) { return config.ownerIDs.has(id); }
 function userName(from) { return from.username ? `@${from.username}` : [from.first_name, from.last_name].filter(Boolean).join(" "); }
@@ -23,13 +28,13 @@ function positiveInteger(value, max = Number.MAX_SAFE_INTEGER) {
 }
 export function isStartCommand(text) { return /^\/start(?:@\w+)?(?:\s|$)/i.test(text ?? ""); }
 
-export function fulfillmentForSale(sale, starsRate = 20) {
+export function fulfillmentForSale(sale, starsRate = 20, prices = {}) {
   if (sale?.fulfillment?.kind) return sale.fulfillment;
   if (!sale) throw new Error("sale not found");
   if (sale.product === "custom") return { kind: "custom" };
   let parsed = null;
   try { if (sale.invoice_payload) parsed = parsePayload(sale.invoice_payload); } catch {}
-  const product = findProduct(sale.product, starsRate);
+  const product = findProduct(sale.product, starsRate, prices);
   if (!product) throw new Error("could not identify the fulfilled product");
   if (product.kind === KINDS.stars) {
     const titleAmount = Number(String(sale.title).match(/^(\d+)(?:\s+\S+)?\s+Stars$/)?.[1] ?? 0);
@@ -42,7 +47,8 @@ export function fulfillmentForSale(sale, starsRate = 20) {
 }
 
 export async function reverseSaleFulfillment(sale, db, gramsrv) {
-  const item = fulfillmentForSale(sale, await db.starsRate());
+  const { starsRate, prices } = await catalogContext(db);
+  const item = fulfillmentForSale(sale, starsRate, prices);
   const key = `refund:${sale.charge_id}:${item.kind}`;
   if (item.kind === "custom") return item;
   if (item.kind === "stars") await gramsrv.debitStars(item.recipientID, item.amount, "Telegram bot refund", key);
@@ -78,6 +84,48 @@ export async function executeCompensatedRefund({ sale, telegramID, db, gramsrv, 
   }
 }
 
+// Enforces the "one active number per Telegram account" invariant in the bot
+// DB. Any user that still owns extra non-retired numbers (left behind by earlier
+// logic) gets them removed: free numbers go back to the pool, purchased +888
+// numbers are retired forever. Exactly one retained number is kept. If an extra
+// number is still bound to a server account ("signed up"), that account is
+// rebound to the kept number first so the removal never strands the user's
+// account phone. A failed lookup or rebind fails closed: the extra number is
+// kept untouched so no OTP route is lost.
+export async function runNumberRetention({ db, gramsrv, log = console }) {
+  const owners = await db.duplicateNumberOwners();
+  for (const ownerID of owners) {
+    try {
+      const owned = (await db.numbers(ownerID)) ?? [];
+      const current = owned.find((number) => number.is_current);
+      if (!current || owned.length <= 1) continue;
+      let anyMovable = false;
+      for (const number of owned) {
+        if (number.id === current.id) continue;
+        let accountID = 0;
+        try { accountID = await gramsrv.resolveUserByPhone(number.phone); }
+        catch (error) { log.error?.("Retention account lookup failed", ownerID, number.phone, error); continue; }
+        if (accountID > 0) {
+          try {
+            await gramsrv.setPhone(accountID, current.phone, "Retention rebind to current number", `retention:${ownerID}:${number.phone}:${current.phone}`);
+            log.log?.(`Rebound account ${accountID} from ${number.phone} to ${current.phone} (telegram ${ownerID})`);
+          } catch (error) {
+            log.error?.("Retention rebind failed", ownerID, number.phone, error);
+            continue;
+          }
+        }
+        anyMovable = true;
+      }
+      if (!anyMovable) continue;
+      const result = await db.cleanupDuplicateNumbers(ownerID, current.id);
+      if (result.removed + result.retired > 0) log.log?.(`Released ${result.removed} free and retired ${result.retired} number(s) for telegram ${ownerID}; kept ${result.keptPhone}`);
+    } catch (error) {
+      log.error?.("Number retention cleanup failed", ownerID, error);
+    }
+  }
+  return owners.length;
+}
+
 export function mainKeyboard(language, admin = false) {
   const kb = new InlineKeyboard()
     .text(translate(language, "buttonNumbers"), "menu:numbers").text(translate(language, "buttonShop"), "menu:shop").row()
@@ -95,6 +143,7 @@ export function shopKeyboard(language) {
   return new InlineKeyboard()
     .text(translate(language, "buttonPremium"), "shop:premium").text(translate(language, "buttonStars"), "shop:stars").row()
     .text(translate(language, "buttonNumber"), "shop:number").text(translate(language, "buttonUsername"), "shop:username").row()
+    .text(translate(language, "buyCustomNumberButton"), "shop:number").row()
     .text(translate(language, "back"), "menu:home");
 }
 
@@ -127,8 +176,8 @@ export function adminKeyboard(language) {
     .text(translate(language, "adminPromoButton"), "admin:promo").text(translate(language, "adminGiveawayButton"), "admin:giveaway").row()
     .text(translate(language, "adminBonusButton"), "admin:bonus").text(translate(language, "adminInvoiceButton"), "admin:invoice").row()
     .text(translate(language, "adminAccessButton"), "admin:access").text(translate(language, "adminRefundButton"), "admin:refund").row()
-    .text(translate(language, "adminReplyButton"), "admin:reply").text(translate(language, "adminRateButton"), "admin:rate").row()
-    .text(translate(language, "adminBindPhoneButton"), "admin:bindphone").row()
+    .text(translate(language, "adminReplyButton"), "admin:reply").text(translate(language, "adminPricesButton"), "admin:prices").row()
+    .text(translate(language, "adminBindPhoneButton"), "admin:bindphone").text(translate(language, "adminSalesButton"), "admin:sales").row()
     .text(translate(language, "back"), "menu:home");
 }
 
@@ -171,11 +220,11 @@ function parseStartRef(ctx) {
   return match ? Number(match[1]) : 0;
 }
 
-function productText(product, language) {
+function productText(product, language, note = "") {
   const extra = product.kind === KINDS.username
     ? `\n${translate(language, "productBid", { bid: product.bid })}`
     : product.kind === KINDS.stars ? `\n${translate(language, "productCredit", { amount: product.starsAmount })}` : "";
-  return `<b>${escapeHTML(product.title)}</b>\n\n${escapeHTML(product.description)}\n\n${translate(language, "productPrice", { price: product.starsPrice })}${extra}`;
+  return `<b>${escapeHTML(product.title)}</b>\n\n${escapeHTML(product.description)}\n\n${translate(language, "productPrice", { price: product.starsPrice })}${extra}${note}`;
 }
 
 function productKeyboard(product, db, buyerID, language) {
@@ -216,6 +265,23 @@ export function createBot({ config, db, gramsrv }) {
   const localized = (id, product) => localizeProduct(product, languageOf(id));
   const phoneShareMessages = new Map();
 
+  // A repeat +888 buyer (already owns a paid anonymous number) gets a discount
+  // configured by the admin. The effective price is applied to the shop list,
+  // product page, invoice, pre-checkout validation and the sale snapshot.
+  async function effectiveNumberPrice(buyerID, product) {
+    if (product.kind !== KINDS.number) return product.starsPrice;
+    const current = await db.currentNumber(buyerID);
+    if (!current || current.format === "free") return product.starsPrice;
+    const discount = await db.numberDiscountPercent();
+    if (!discount) return product.starsPrice;
+    return Math.max(1, Math.round((product.starsPrice * (100 - discount)) / 100));
+  }
+
+  async function effectiveProduct(buyerID, product) {
+    const price = await effectiveNumberPrice(buyerID, product);
+    return price === product.starsPrice ? product : { ...product, starsPrice: price };
+  }
+
   function deleteAfter(chatID, messageID, delayMs = 30_000) {
     if (chatID > 0 && messageID) setTimeout(() => bot.api.deleteMessage(chatID, messageID).catch(() => {}), delayMs).unref?.();
   }
@@ -244,12 +310,42 @@ export function createBot({ config, db, gramsrv }) {
     const purchasedOwned = currentNumber && currentNumber.format !== "free";
     const kb = new InlineKeyboard();
     if (!purchasedOwned) kb.text(tr(ctx.from.id, "newFreeNumber"), "numbers:new").row();
+    else kb.text(tr(ctx.from.id, "buyCustomNumberButton"), "shop:number").row();
     kb.text(tr(ctx.from.id, "back"), "menu:home");
     const note = purchasedOwned ? `\n\n${tr(ctx.from.id, "freeNumberUnavailable")}` : "";
     return editOrReply(ctx, `${tr(ctx.from.id, "numbersTitle")}\n\n${list || "—"}${note}`, kb);
   }
 
   db._userCache = new Map();
+
+  // L7 rate limiting: a per-user sliding window over all updates. Owners are
+  // exempt. The first breach in a window triggers a single notice; all further
+  // hits are dropped silently so a flood never reaches the database or the
+  // gramsrv Admin API.
+  const rateBuckets = new Map();
+  bot.use(async (ctx, next) => {
+    if (!ctx.from || isOwner(config, ctx.from.id)) return next();
+    const max = (config.rateLimitMaxRequests ?? 120) || 120;
+    const windowMs = (config.rateLimitWindowSeconds ?? 60) * 1000;
+    const nowMs = Date.now();
+    let bucket = rateBuckets.get(ctx.from.id);
+    if (!bucket || nowMs - bucket.start >= windowMs) {
+      bucket = { start: nowMs, count: 0, noticed: false };
+      rateBuckets.set(ctx.from.id, bucket);
+    }
+    bucket.count++;
+    if (bucket.count <= max) return next();
+    if (!bucket.noticed) {
+      bucket.noticed = true;
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: tr(ctx.from.id, "tooManyRequests"), show_alert: true }).catch(() => {});
+      else await ctx.reply(tr(ctx.from.id, "tooManyRequests"), { parse_mode: "HTML" }).catch(() => {});
+    }
+  });
+  setInterval(() => {
+    const windowMs = (config.rateLimitWindowSeconds ?? 60) * 1000;
+    const cutoff = Date.now() - windowMs;
+    for (const [id, bucket] of rateBuckets) if (bucket.start < cutoff) rateBuckets.delete(id);
+  }, 60_000).unref?.();
 
   bot.use(async (ctx, next) => {
     // Account/number flows and OTP routing are private-chat only.
@@ -319,10 +415,14 @@ export function createBot({ config, db, gramsrv }) {
         if (!title || title.length > 32) throw new Error("invalid invoice");
       } else {
         const parsed = parsePayload(ctx.preCheckoutQuery.invoice_payload);
-        const product = findProduct(parsed.code, await db.starsRate());
-        if (!product || product.starsPrice !== ctx.preCheckoutQuery.total_amount ||
-          (product.kind === KINDS.stars && parsed.starsAmount <= 0) ||
-          (product.kind === KINDS.number && await hasActiveAnonymousNumber(db, ctx.from.id))) throw new Error("number already owned");
+        const { starsRate, prices } = await catalogContext(db);
+        const product = findProduct(parsed.code, starsRate, prices);
+        if (!product) throw new Error("unknown product");
+        const expected = product.kind === KINDS.number
+          ? await effectiveNumberPrice(ctx.from.id, product)
+          : product.starsPrice;
+        if (expected !== ctx.preCheckoutQuery.total_amount ||
+          (product.kind === KINDS.stars && parsed.starsAmount <= 0)) throw new Error("number already owned");
       }
       await ctx.answerPreCheckoutQuery(true);
     } catch {
@@ -330,7 +430,7 @@ export function createBot({ config, db, gramsrv }) {
     }
   });
 
-  async function fulfill(product, recipientID, buyer, chatID, chargeID, extra = "") {
+  async function fulfill(product, recipientID, buyer, chatID, chargeID, extra = "", providerChargeID = "") {
     if (product.kind !== KINDS.number && (!Number.isSafeInteger(recipientID) || recipientID <= 0)) throw new Error(`recipient ${config.productName} ID is invalid`);
     if (await db.saleByCharge(chargeID)) return;
     const key = `payment:${chargeID}:${product.code}`;
@@ -351,10 +451,28 @@ export function createBot({ config, db, gramsrv }) {
     } else if (product.kind === KINDS.number) {
       recipientID = buyer.id;
       const view = localized(buyer.id, product);
-      number = await db.fulfillNumberPurchase({ product: product.code, title: view.title, starsPrice: product.starsPrice, recipientID, buyerID: buyer.id, buyerName: userName(buyer), chargeID }, chatID, product.numberFormat);
+      const account = await db.user(buyer.id);
+      const previous = await db.currentNumber(buyer.id);
+      let accountID = 0;
+      if (account?.server_user_id > 0 && previous?.phone) {
+        const resolved = await gramsrv.resolveUserByPhone(previous.phone).catch(() => 0);
+        if (resolved === account.server_user_id) accountID = resolved;
+      }
+      number = await db.fulfillNumberPurchase({ product: product.code, title: view.title, starsPrice: product.starsPrice, recipientID, buyerID: buyer.id, buyerName: userName(buyer), chargeID, providerChargeID }, chatID, product.numberFormat);
+      if (number && accountID > 0) {
+        try { await gramsrv.setPhone(accountID, number.phone, "Telegram bot number purchase", key); }
+        catch (error) {
+          console.error("Failed to set server phone for number purchase", accountID, error);
+          for (const owner of config.ownerIDs) {
+            await bot.api.sendMessage(owner, tr(owner, "fulfillmentOwnerError", { charge: escapeHTML(chargeID), error: escapeHTML(`setPhone ${accountID} -> ${number.phone}: ${error.message}`) }), { parse_mode: "HTML" }).catch(() => {});
+          }
+        }
+      } else if (number && account?.server_user_id > 0 && previous?.phone && accountID === 0) {
+        await bot.api.sendMessage(chatID, tr(buyer.id, "numberManualChange"), { parse_mode: "HTML" }).catch(() => {});
+      }
     } else throw new Error("unknown product kind");
     const productView = localized(buyer.id, product);
-    if (!number) await db.addSale({ product: product.code, title: productView.title, starsPrice: product.starsPrice, recipientID, buyerID: buyer.id, buyerName: userName(buyer), chargeID, fulfillment });
+    if (!number) await db.addSale({ product: product.code, title: productView.title, starsPrice: product.starsPrice, recipientID, buyerID: buyer.id, buyerName: userName(buyer), chargeID, providerChargeID, fulfillment });
     const message = number
       ? tr(buyer.id, "numberReserved", { phone: escapeHTML(number.display) })
       : tr(buyer.id, "productGranted", { title: escapeHTML(productView.title), id: recipientID });
@@ -364,23 +482,25 @@ export function createBot({ config, db, gramsrv }) {
 
   bot.on("message:successful_payment", async (ctx) => {
     const payment = ctx.message.successful_payment;
-    if (!await db.beginPayment(payment.telegram_payment_charge_id, ctx.from.id, payment.invoice_payload, payment.total_amount)) return;
+    if (!await db.beginPayment(payment.telegram_payment_charge_id, ctx.from.id, payment.invoice_payload, payment.total_amount, payment.provider_payment_charge_id)) return;
     try {
       if (payment.invoice_payload.startsWith("custom|")) {
         const title = Buffer.from(payment.invoice_payload.slice(7), "base64url").toString("utf8");
-        await db.addSale({ product: "custom", title, starsPrice: payment.total_amount, recipientID: ctx.from.id, buyerID: ctx.from.id, buyerName: userName(ctx.from), chargeID: payment.telegram_payment_charge_id, fulfillment: { kind: "custom" } });
+        await db.addSale({ product: "custom", title, starsPrice: payment.total_amount, recipientID: ctx.from.id, buyerID: ctx.from.id, buyerName: userName(ctx.from), chargeID: payment.telegram_payment_charge_id, providerChargeID: payment.provider_payment_charge_id, fulfillment: { kind: "custom" } });
         await ctx.reply(tr(ctx.from.id, "paymentReceived", { title: escapeHTML(title) }), { parse_mode: "HTML" });
       } else {
         const parsed = parsePayload(payment.invoice_payload);
-        let product = findProduct(parsed.code, await db.starsRate());
+        const { starsRate, prices } = await catalogContext(db);
+        let product = findProduct(parsed.code, starsRate, prices);
         if (!product) throw new Error("product no longer exists");
+        if (product.kind === KINDS.number) product = await effectiveProduct(ctx.from.id, product);
         if (payment.currency !== "XTR" || payment.total_amount !== product.starsPrice) throw new Error("paid amount does not match the product");
         if (product.kind === KINDS.stars) {
           if (parsed.starsAmount <= 0) throw new Error("invoice has no snapshotted server Stars amount");
           product = { ...product, starsAmount: parsed.starsAmount, title: `${parsed.starsAmount} Stars`, titleRu: `${parsed.starsAmount} Stars` };
         }
         const recipient = parsed.targetUserID || (await db.user(ctx.from.id))?.server_user_id || 0;
-        await fulfill(product, recipient, ctx.from, ctx.chat.id, payment.telegram_payment_charge_id, parsed.extra);
+        await fulfill(product, recipient, ctx.from, ctx.chat.id, payment.telegram_payment_charge_id, parsed.extra, payment.provider_payment_charge_id);
       }
       await db.finishPayment(payment.telegram_payment_charge_id);
     } catch (error) {
@@ -401,11 +521,12 @@ export function createBot({ config, db, gramsrv }) {
       const payment = await db.paymentByCharge(String(ctx.match ?? "").trim());
       if (!payment) throw new Error("payment not found");
       const parsed = parsePayload(payment.invoice_payload);
-      const product = findProduct(parsed.code, await db.starsRate());
-      if (product?.kind !== KINDS.number || product.starsPrice !== payment.amount) throw new Error("only stored number payments can be retried");
+      const { starsRate, prices } = await catalogContext(db);
+      const product = findProduct(parsed.code, starsRate, prices);
+      if (product?.kind !== KINDS.number) throw new Error("only stored number payments can be retried");
       const buyer = await db.user(payment.telegram_id);
       if (!buyer) throw new Error("user not found");
-      await fulfill(product, buyer.telegram_id, { id: buyer.telegram_id, first_name: buyer.first_name, username: buyer.username }, buyer.telegram_id, payment.charge_id);
+      await fulfill({ ...product, starsPrice: payment.amount }, buyer.telegram_id, { id: buyer.telegram_id, first_name: buyer.first_name, username: buyer.username }, buyer.telegram_id, payment.charge_id, "", payment.provider_charge_id);
       await ctx.reply(tr(ctx.from.id, "numberPaymentRecovered"));
     } catch (error) {
       await ctx.reply(translateError(languageOf(ctx.from.id), error));
@@ -475,10 +596,11 @@ export function createBot({ config, db, gramsrv }) {
     const kind = ctx.match[1];
     const language = languageOf(ctx.from.id);
     const kb = new InlineKeyboard();
-    const starsRate = await db.starsRate();
-    for (const product of productsOfKind(kind, starsRate)) {
+    const { starsRate, prices } = await catalogContext(db);
+    for (const product of productsOfKind(kind, starsRate, prices)) {
       const view = localizeProduct(product, language);
-      kb.text(`${view.title} · ${product.starsPrice} ⭐`, `product:${product.code}`).row();
+      const price = product.kind === KINDS.number ? await effectiveNumberPrice(ctx.from.id, product) : product.starsPrice;
+      kb.text(`${view.title} · ${price} ⭐`, `product:${product.code}`).row();
     }
     if (kind === KINDS.stars) kb.text(tr(ctx.from.id, "customAmountButton"), "stars:custom").row();
     kb.text(tr(ctx.from.id, "back"), "menu:shop");
@@ -493,12 +615,20 @@ export function createBot({ config, db, gramsrv }) {
 
   bot.callbackQuery(/^product:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const starsRate = await db.starsRate();
-    const product = findProduct(ctx.match[1], starsRate);
+    const { starsRate, prices } = await catalogContext(db);
+    let product = findProduct(ctx.match[1], starsRate, prices);
     if (!product) return;
     const language = languageOf(ctx.from.id);
+    let note = "";
+    if (product.kind === KINDS.number) {
+      const effective = await effectiveProduct(ctx.from.id, product);
+      if (effective.starsPrice !== product.starsPrice) {
+        product = effective;
+        note = `\n${tr(ctx.from.id, "numberRepeatDiscount", { percent: await db.numberDiscountPercent() })}`;
+      }
+    }
     const view = localizeProduct(product, language);
-    await editOrReply(ctx, productText(view, language), productKeyboard(product, { _cachedUser: db._userCache.get(ctx.from.id) }, ctx.from.id, language));
+    await editOrReply(ctx, productText(view, language, note), productKeyboard(product, { _cachedUser: db._userCache.get(ctx.from.id) }, ctx.from.id, language));
   });
 
   bot.callbackQuery(/^target:(.+)$/, async (ctx) => {
@@ -509,14 +639,12 @@ export function createBot({ config, db, gramsrv }) {
 
   bot.callbackQuery(/^buy:([^:]+):(\d+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
-    const starsRate = await db.starsRate();
-    const product = findProduct(ctx.match[1], starsRate);
+    const { starsRate, prices } = await catalogContext(db);
+    let product = findProduct(ctx.match[1], starsRate, prices);
     const targetID = Number(ctx.match[2]);
     if (!product) return;
     const language = languageOf(ctx.from.id);
-    if (product.kind === KINDS.number && await hasActiveAnonymousNumber(db, ctx.from.id)) {
-      return ctx.reply(tr(ctx.from.id, "errorNumberAlreadyOwned"));
-    }
+    if (product.kind === KINDS.number) product = await effectiveProduct(ctx.from.id, product);
     if (product.kind === KINDS.username) {
       await db.setPending(ctx.from.id, "username", { productCode: product.code, targetID });
       return editOrReply(ctx, tr(ctx.from.id, "enterUsername"), backKeyboard(language, `product:${product.code}`));
@@ -584,7 +712,7 @@ export function createBot({ config, db, gramsrv }) {
       db._userCache.set(ctx.from.id, await db.user(ctx.from.id));
       const message = tr(ctx.from.id, "accountSaved", { id: serverUserID });
       await ctx.answerCallbackQuery({ text: message });
-      return editOrReply(ctx, message, mainKeyboard(language, isOwner(config, ctx.from.id)));
+      return editOrReply(ctx, tr(ctx.from.id, "menuTitle"), mainKeyboard(language, isOwner(config, ctx.from.id)));
     } catch (error) {
       console.error("Account fetch failed", error);
       const text = String(error?.message ?? "").startsWith("gramsrv ")
@@ -682,9 +810,30 @@ export function createBot({ config, db, gramsrv }) {
     const action = ctx.match[1];
     const language = languageOf(ctx.from.id);
     if (action === "menu") return editOrReply(ctx, tr(ctx.from.id, "adminTitle"), adminKeyboard(language));
+    if (action === "prices") {
+      const { starsRate, prices } = await catalogContext(db);
+      const defaults = catalog(starsRate).filter((p) => p.kind !== KINDS.stars).map((p) => ({ code: p.code, title: localizeProduct(p, language).title, default: p.starsPrice }));
+      const lines = defaults.map((p) => {
+        const current = p.code in prices ? prices[p.code] : p.default;
+        const override = p.code in prices ? ` (${p.default})` : "";
+        return `<code>${p.code}</code> · ${escapeHTML(p.title)}: <b>${current} ⭐</b>${escapeHTML(override)}`;
+      });
+      lines.push(`${translate(language, "adminDiscountLine")}: <b>${await db.numberDiscountPercent()}%</b>`);
+      await db.setPending(ctx.from.id, "admin_prices");
+      return editOrReply(ctx, `${tr(ctx.from.id, "adminPromptPrices", { rate: String(starsRate) })}\n\n${lines.join("\n")}`, backKeyboard(language, "admin:menu"));
+    }
     if (action === "stats") {
       const stats = await db.stats();
       return editOrReply(ctx, tr(ctx.from.id, "adminStats", stats), backKeyboard(language, "admin:menu"));
+    }
+    if (action === "sales") {
+      const rows = await db.recentSales(10);
+      const lines = rows.map((s) => {
+        const name = String(s.buyer_name ?? s.buyer_id ?? "");
+        const product = String(s.product ?? s.title ?? "");
+        return `#${s.id} · <code>${escapeHTML(s.charge_id)}</code> · ${escapeHTML(product)} · ${s.stars_price} ⭐ · ${escapeHTML(name)}`;
+      });
+      return editOrReply(ctx, `${tr(ctx.from.id, "adminRecentSales")}\n\n${lines.join("\n") || tr(ctx.from.id, "noSales")}`, backKeyboard(language, "admin:menu"));
     }
     if (action === "lookup") {
       await db.setPending(ctx.from.id, "admin_lookup");
@@ -693,7 +842,7 @@ export function createBot({ config, db, gramsrv }) {
     const promptKeys = {
       broadcast: "adminPromptBroadcast", stars: "adminPromptStars", premium: "adminPromptPremium", promo: "adminPromptPromo",
       giveaway: "adminPromptGiveaway", bonus: "adminPromptBonus", invoice: "adminPromptInvoice", access: "adminPromptAccess",
-      refund: "adminPromptRefund", reply: "adminPromptReply", rate: "adminPromptRate", bindphone: "adminPromptBindPhone",
+      refund: "adminPromptRefund", reply: "adminPromptReply", bindphone: "adminPromptBindPhone",
     };
     if (promptKeys[action]) {
       await db.setPending(ctx.from.id, `admin_${action}`, { operationID: `admin:${ctx.from.id}:${Date.now()}:${randomInt(1_000_000)}` });
@@ -742,22 +891,38 @@ export function createBot({ config, db, gramsrv }) {
       if (pending.kind === "account") {
         const id = Number(input);
         if (!Number.isSafeInteger(id) || id <= 0) throw new Error("invalid ID");
+        // A manual ID must match the account behind the user's own number when
+        // it can be resolved; otherwise the entry is unattested and allowed,
+        // but no server phone is ever mutated for an unresolved ID.
+        if (isRealMode(config)) {
+          const verified = await db.verifiedPhone(ctx.from.id);
+          if (verified?.phone) {
+            const resolved = await gramsrv.resolveUserByPhone(verified.phone).catch(() => 0);
+            if (resolved > 0 && resolved !== id) throw new Error("account ID does not match your phone number");
+          }
+        } else {
+          const currentNumber = await db.currentNumber(ctx.from.id);
+          if (currentNumber?.phone) {
+            const resolved = await gramsrv.resolveUserByPhone(currentNumber.phone).catch(() => 0);
+            if (resolved > 0 && resolved !== id) throw new Error("account ID does not match your phone number");
+          }
+        }
         await db.setServerUserID(ctx.from.id, id); await db.clearPending(ctx.from.id);
         return ctx.reply(tr(ctx.from.id, "accountSaved", { id }), { parse_mode: "HTML", reply_markup: mainKeyboard(language, isOwner(config, ctx.from.id)) });
       }
       if (pending.kind === "stars_amount") {
         const stars = Number(input);
         if (!Number.isSafeInteger(stars) || stars <= 0 || stars > 99999) throw new Error("amount must be from 1 to 99999");
-        const starsRate = await db.starsRate();
-        const product = findProduct(`stars_${stars}`, starsRate); await db.clearPending(ctx.from.id);
+        const { starsRate, prices } = await catalogContext(db);
+        const product = findProduct(`stars_${stars}`, starsRate, prices); await db.clearPending(ctx.from.id);
         const view = localizeProduct(product, language);
         return ctx.reply(productText(view, language), { parse_mode: "HTML", reply_markup: productKeyboard(product, { _cachedUser: db._userCache.get(ctx.from.id) }, ctx.from.id, language) });
       }
       if (pending.kind === "target") {
         const id = Number(input);
         if (!Number.isSafeInteger(id) || id <= 0) throw new Error("invalid ID");
-        const starsRate = await db.starsRate();
-        const product = findProduct(pending.payload.productCode, starsRate);
+        const { starsRate, prices } = await catalogContext(db);
+        const product = findProduct(pending.payload.productCode, starsRate, prices);
         if (!product) throw new Error("product not found");
         await db.rememberRecipient(ctx.from.id, id); await db.clearPending(ctx.from.id);
         if (product.kind === KINDS.username) {
@@ -770,8 +935,8 @@ export function createBot({ config, db, gramsrv }) {
       if (pending.kind === "username") {
         const username = normalizeUsername(input);
         if (!username) throw new Error("username must be 5-32 latin characters and start with a letter");
-        const starsRate = await db.starsRate();
-        const product = findProduct(pending.payload.productCode, starsRate);
+        const { starsRate, prices } = await catalogContext(db);
+        const product = findProduct(pending.payload.productCode, starsRate, prices);
         if (!product) throw new Error("product not found");
         await db.clearPending(ctx.from.id);
         if (isOwner(config, ctx.from.id)) return fulfill(product, pending.payload.targetID, ctx.from, ctx.chat.id, `owner-${ctx.from.id}-${Date.now()}-${randomInt(1_000_000)}`, username);
@@ -868,18 +1033,31 @@ export function createBot({ config, db, gramsrv }) {
         if (!Number.isSafeInteger(targetID) || targetID <= 0 || !phone) throw new Error("invalid Telegram ID or phone");
         const user = await db.user(targetID);
         if (!user) return adminResult(tr(ctx.from.id, "userNotFound"));
-        await db.bindVerifiedPhone(targetID, user.chat_id, phone);
+        const number = await db.adminBindNumber(targetID, user.chat_id, phone);
+        if (number.format === "free") await db.bindVerifiedPhone(targetID, user.chat_id, number.phone);
+        if (user.server_user_id > 0) {
+          try {
+            await gramsrv.setPhone(user.server_user_id, number.phone, "Admin number bind", `admin:bindphone:${targetID}:${Date.now()}`);
+          } catch (error) {
+            console.error("Admin bind set-phone failed", targetID, error);
+            return adminResult(tr(ctx.from.id, "bindPhonePartial", { phone: escapeHTML(number.display), id: targetID }));
+          }
+        }
         await db.clearPending(ctx.from.id);
-        return adminResult(tr(ctx.from.id, "bindPhoneDone", { phone: escapeHTML(phone), id: targetID }));
+        return adminResult(tr(ctx.from.id, "bindPhoneDone", { phone: escapeHTML(number.display), id: targetID }));
       }
       if (pending.kind === "admin_refund") {
-        const parts = input.split(/\s+/); let telegramID, chargeID, sale;
-        if (parts.length === 1) { chargeID = parts[0]; sale = await db.saleByCharge(chargeID); telegramID = sale?.buyer_id; }
-        else if (parts.length === 2) { telegramID = positiveInteger(parts[0]); chargeID = parts[1]; }
-        if (!telegramID || !chargeID) throw new Error("sale not found for this transaction ID");
+        const parts = input.split(/\s+/);
+        let expectedBuyerID, chargeID;
+        if (parts.length === 1) chargeID = parts[0];
+        else if (parts.length === 2) { expectedBuyerID = positiveInteger(parts[0]); chargeID = parts[1]; }
+        else throw new Error("sale not found for this transaction ID");
+        if (!chargeID) throw new Error("sale not found for this transaction ID");
+        const sale = await db.refundTargetByCharge(chargeID);
+        if (!sale) throw new Error("sale not found for this transaction ID");
+        if (expectedBuyerID && sale.buyer_id !== expectedBuyerID) throw new Error("sale buyer mismatch");
         if (await db.isRefunded(chargeID)) throw new Error("payment was already refunded");
-        sale ??= await db.saleByCharge(chargeID);
-        if (!sale || sale.buyer_id !== telegramID || sale.payment_status !== "done") throw new Error("completed sale or its owner was not found");
+        const telegramID = sale.buyer_id;
         await executeCompensatedRefund({ sale, telegramID, db, gramsrv, refundStarPayment: bot.api.refundStarPayment.bind(bot.api) });
         await db.clearPending(ctx.from.id);
         await bot.api.sendMessage(telegramID, tr(telegramID, "paymentRefunded", { charge: escapeHTML(chargeID) }), { parse_mode: "HTML" }).catch(() => {});
@@ -887,6 +1065,7 @@ export function createBot({ config, db, gramsrv }) {
       }
       if (pending.kind === "admin_reply") {
         const [ticketRaw, ...words] = input.split(/\s+/); const ticketID = Number(ticketRaw), answer = words.join(" ").trim();
+        if (!Number.isSafeInteger(ticketID) || ticketID <= 0) throw new Error("invalid ticket ID");
         const ticket = await db.supportMessage(ticketID);
         if (!ticket || !answer) throw new Error("ticket not found or reply is empty");
         await bot.api.sendMessage(ticket.telegram_id, tr(ticket.telegram_id, "supportReply", { ticket: ticketID, answer: escapeHTML(answer) }), { parse_mode: "HTML" });
@@ -899,8 +1078,40 @@ export function createBot({ config, db, gramsrv }) {
         await db.setSetting("stars_rate", rate); await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, "rateSaved", { rate }));
       }
+      if (pending.kind === "admin_prices") {
+        const overridable = new Set(catalog(await db.starsRate()).filter((p) => p.kind !== KINDS.stars).map((p) => p.code));
+        const lines = input.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        if (!lines.length) throw new Error("no prices provided");
+        let updated = 0;
+        for (const line of lines) {
+          const parts = line.split(/\s+/);
+          if (parts.length !== 2) throw new Error("invalid price format");
+          const [codeRaw, valueRaw] = parts;
+          const value = Number(valueRaw);
+          if (!Number.isSafeInteger(value) || value < 0 || value > 100000) throw new Error("invalid price");
+          if (codeRaw === "all") {
+            for (const code of overridable) await db.setProductPrice(code, value);
+            updated += overridable.size;
+          } else if (codeRaw === "rate") {
+            if (value <= 0) throw new Error("invalid rate");
+            await db.setSetting("stars_rate", value);
+            updated++;
+          } else if (codeRaw === "discount") {
+            if (value > 100) throw new Error("invalid discount");
+            await db.setSetting("number_discount_percent", value);
+            updated++;
+          } else {
+            if (!overridable.has(codeRaw)) throw new Error("unknown product code");
+            await db.setProductPrice(codeRaw, value);
+            updated++;
+          }
+        }
+        await db.clearPending(ctx.from.id);
+        return adminResult(tr(ctx.from.id, "pricesSaved", { count: updated }));
+      }
     } catch (error) {
       console.error("Bot input action failed", pending.kind, error);
+      if (pending.kind.startsWith("admin_")) await db.clearPending(ctx.from.id);
       await ctx.reply(translateError(language, error));
     }
   });
