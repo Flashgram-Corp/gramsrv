@@ -98,7 +98,9 @@ export class BotDatabase {
   }
 
   async user(id) {
-    const res = await this.pool.query("SELECT * FROM users WHERE telegram_id = $1", [id]);
+    const telegramID = Number(id);
+    if (!Number.isSafeInteger(telegramID) || telegramID <= 0) return null;
+    const res = await this.pool.query("SELECT * FROM users WHERE telegram_id = $1", [telegramID]);
     return res.rows[0] ?? null;
   }
 

@@ -34,6 +34,15 @@ function parseModerationTarget(value) {
   if (/^(0|off|no|false)$/i.test(stateRaw)) return { id, on: false };
   throw new Error("invalid state: use on or off");
 }
+
+// gramsrv account actions (mints, verified, frozen, flags) take the gramsrv
+// account id, not the Telegram id. Resolve the admin's Telegram target onto its
+// linked gramsrv account; 0 means no account is linked (nothing to act on).
+async function gramsrvUserIDOf(db, telegramID) {
+  const user = await db.user(telegramID);
+  if (!user) return 0;
+  return Number.isSafeInteger(user.server_user_id) && user.server_user_id > 0 ? user.server_user_id : 0;
+}
 export function isStartCommand(text) { return /^\/start(?:@\w+)?(?:\s|$)/i.test(text ?? ""); }
 
 export function fulfillmentForSale(sale, starsRate = 20, prices = {}) {
@@ -1087,49 +1096,57 @@ export function createBot({ config, db, gramsrv }) {
         const targetID = Number(idRaw);
         const username = normalizeUsername(words.join(""), 4);
         if (!Number.isSafeInteger(targetID) || targetID <= 0 || !username) throw new Error("invalid Telegram ID or username");
-        const user = await db.user(targetID);
-        if (!user) return adminResult(tr(ctx.from.id, "userNotFound"));
+        const serverUserID = await gramsrvUserIDOf(db, targetID);
+        if (!serverUserID) return adminResult(tr(ctx.from.id, "adminNoAccount", { id: targetID }));
         // A server-side dry run is the authoritative occupation check before a
         // zero-price grant (blind even for vault names). The real mint rechecks
         // inside its own command, so a gang between the two calls cannot win.
         const actor = String(ctx.from.id);
-        await gramsrv.mintUsername(targetID, username, 0, "", true, actor).catch((error) => {
+        await gramsrv.mintUsername(serverUserID, username, 0, "", true, actor).catch((error) => {
           if (/username occupied/i.test(String(error.message))) throw new Error("username occupied");
           throw error;
         });
-        await gramsrv.mintUsername(targetID, username, 0, `admin:grantusername:${targetID}:${username}:${Date.now()}`, false, actor);
+        await gramsrv.mintUsername(serverUserID, username, 0, `admin:grantusername:${targetID}:${username}:${Date.now()}`, false, actor);
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, "grantUsernameDone", { username: escapeHTML(username), id: targetID }));
       }
       if (pending.kind === "admin_verified") {
         const { id, on } = parseModerationTarget(input);
+        const serverUserID = await gramsrvUserIDOf(db, id);
+        if (!serverUserID) return adminResult(tr(ctx.from.id, "adminNoAccount", { id }));
         const actor = String(ctx.from.id);
-        await gramsrv.setVerified(id, on, "Telegram bot administrator moderation", "", true, actor);
-        await gramsrv.setVerified(id, on, "Telegram bot administrator moderation", `admin:verified:${id}:${Date.now()}`, false, actor);
+        await gramsrv.setVerified(serverUserID, on, "Telegram bot administrator moderation", "", true, actor);
+        await gramsrv.setVerified(serverUserID, on, "Telegram bot administrator moderation", `admin:verified:${id}:${Date.now()}`, false, actor);
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, on ? "verifiedDone" : "verifiedRemoved", { id }));
       }
       if (pending.kind === "admin_freeze") {
         const { id, on } = parseModerationTarget(input);
+        const serverUserID = await gramsrvUserIDOf(db, id);
+        if (!serverUserID) return adminResult(tr(ctx.from.id, "adminNoAccount", { id }));
         const actor = String(ctx.from.id);
-        await gramsrv.setFrozen(id, on, "Telegram bot administrator moderation", "", true, actor);
-        await gramsrv.setFrozen(id, on, "Telegram bot administrator moderation", `admin:freeze:${id}:${Date.now()}`, false, actor);
+        await gramsrv.setFrozen(serverUserID, on, "Telegram bot administrator moderation", "", true, actor);
+        await gramsrv.setFrozen(serverUserID, on, "Telegram bot administrator moderation", `admin:freeze:${id}:${Date.now()}`, false, actor);
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, on ? "frozenDone" : "unfrozenDone", { id }));
       }
       if (pending.kind === "admin_scam") {
         const { id, on } = parseModerationTarget(input);
+        const serverUserID = await gramsrvUserIDOf(db, id);
+        if (!serverUserID) return adminResult(tr(ctx.from.id, "adminNoAccount", { id }));
         const actor = String(ctx.from.id);
-        await gramsrv.setFlags(id, on, false, "Telegram bot administrator moderation", "", true, actor);
-        await gramsrv.setFlags(id, on, false, "Telegram bot administrator moderation", `admin:scam:${id}:${Date.now()}`, false, actor);
+        await gramsrv.setFlags(serverUserID, on, false, "Telegram bot administrator moderation", "", true, actor);
+        await gramsrv.setFlags(serverUserID, on, false, "Telegram bot administrator moderation", `admin:scam:${id}:${Date.now()}`, false, actor);
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, on ? "scamFlagDone" : "scamFlagRemoved", { id }));
       }
       if (pending.kind === "admin_fake") {
         const { id, on } = parseModerationTarget(input);
+        const serverUserID = await gramsrvUserIDOf(db, id);
+        if (!serverUserID) return adminResult(tr(ctx.from.id, "adminNoAccount", { id }));
         const actor = String(ctx.from.id);
-        await gramsrv.setFlags(id, false, on, "Telegram bot administrator moderation", "", true, actor);
-        await gramsrv.setFlags(id, false, on, "Telegram bot administrator moderation", `admin:fake:${id}:${Date.now()}`, false, actor);
+        await gramsrv.setFlags(serverUserID, false, on, "Telegram bot administrator moderation", "", true, actor);
+        await gramsrv.setFlags(serverUserID, false, on, "Telegram bot administrator moderation", `admin:fake:${id}:${Date.now()}`, false, actor);
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, on ? "fakeFlagDone" : "fakeFlagRemoved", { id }));
       }

@@ -637,11 +637,13 @@ test("admin can grant an NFT username next to the bind phone button", async () =
   config.ownerIDs.add(777);
   await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
   await db.upsertUser({ id: 10, first_name: "Target", language_code: "ru" }, 10, "ru");
+  const target = await db.user(10);
+  target.server_user_id = 1780243205;
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:menu" }));
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grants" }));
   const grants = calls.find((call) => call.method === "editMessageText" && /grant|выдача/i.test(call.payload.text));
   const rows = grants.payload.reply_markup.inline_keyboard.map((row) => row.map((button) => button.text).join("\u0001"));
-  assert.ok(rows.some((row) => row.includes("🎨 Выдать NFT username\u0001📞 Привязать номер")), "grant NFT username sits right next to bind phone on the same row");
+  assert.ok(rows.some((row) => row.includes("🎨 NFT username\u0001📞 Привязать номер")), "grant NFT username sits right next to bind phone on the same row");
   const mints = [];
   gramsrv.mintUsername = async (userID, username, bid, key, dryRun) => { mints.push({ userID, username, bid, dryRun }); return {}; };
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grantusername" }));
@@ -651,7 +653,7 @@ test("admin can grant an NFT username next to the bind phone button", async () =
   assert.equal(mints.length, 2, "a dry-run occupation check precedes the real zero-price mint");
   assert.equal(mints[0].dryRun, true);
   assert.ok(!mints[1].dryRun, "the real mint runs without the dry-run flag");
-  assert.equal(mints[0].userID, 10);
+  assert.equal(mints[0].userID, 1780243205, "the mint targets the linked gramsrv account, not the Telegram id");
   assert.equal(mints[0].bid, 0);
   assert.equal(mints[0].username, "aaaa", "4-character usernames are grantable by admins");
   const done = calls.filter((call) => call.method === "sendMessage").find((call) => /aaaa/.test(call.payload.text) && /выдан|granted to/i.test(call.payload.text));
@@ -663,6 +665,8 @@ test("admin grant refuses an occupied NFT username without minting", async () =>
   config.ownerIDs.add(777);
   await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
   await db.upsertUser({ id: 10, first_name: "Target", language_code: "ru" }, 10, "ru");
+  const target = await db.user(10);
+  target.server_user_id = 1780243205;
   let called = 0;
   gramsrv.mintUsername = async (_userID, _username, _bid, _key, dryRun) => {
     called++;
@@ -697,13 +701,16 @@ test("admin verified toggle dry-runs then applies and attributes the actor", asy
   const { bot, calls, config, db, gramsrv } = fixture();
   config.ownerIDs.add(777);
   await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 424242, first_name: "Target", language_code: "ru" }, 424242, "ru");
+  const target = await db.user(424242);
+  target.server_user_id = 1780243205;
   const callsSeen = [];
   gramsrv.setVerified = async (...args) => callsSeen.push(args);
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:verified" }));
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "424242" }));
   assert.equal(callsSeen.length, 2, "a dry run precedes the real moderation command");
-  assert.deepEqual(callsSeen[0], [424242, true, "Telegram bot administrator moderation", "", true, "777"]);
-  assert.equal(callsSeen[1][0], 424242);
+  assert.deepEqual(callsSeen[0], [1780243205, true, "Telegram bot administrator moderation", "", true, "777"], "the gramsrv account id is used, not the Telegram id");
+  assert.equal(callsSeen[1][0], 1780243205);
   assert.equal(callsSeen[1][1], true);
   assert.equal(callsSeen[1][4], false, "the real call is not a dry run");
   assert.equal(callsSeen[1][3].startsWith("admin:verified:424242:"), true, "the real call gets a deterministic idempotency key");
@@ -716,11 +723,14 @@ test("admin can un-verify and pass an explicit off state", async () => {
   const { bot, calls, config, db, gramsrv } = fixture();
   config.ownerIDs.add(777);
   await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 424242, first_name: "Target", language_code: "ru" }, 424242, "ru");
+  const target = await db.user(424242);
+  target.server_user_id = 1780243205;
   const callsSeen = [];
   gramsrv.setVerified = async (...args) => callsSeen.push(args);
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:verified" }));
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "424242 off" }));
-  assert.deepEqual(callsSeen[1].slice(0, 2), [424242, false]);
+  assert.deepEqual(callsSeen[1].slice(0, 2), [1780243205, false]);
   const reply = calls.filter((call) => call.method === "sendMessage").at(-1);
   assert.match(reply.payload.text, /снят бейдж верификации|verified badge was removed/i);
 });
@@ -729,12 +739,15 @@ test("moderation buttons freeze, flag scam and flag fake via the gramsrv API", a
   const { bot, calls, config, db, gramsrv } = fixture();
   config.ownerIDs.add(777);
   await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 424242, first_name: "Target", language_code: "ru" }, 424242, "ru");
+  const target = await db.user(424242);
+  target.server_user_id = 1780243205;
   const frozen = [], flagged = [];
   gramsrv.setFrozen = async (...args) => frozen.push(args);
   gramsrv.setFlags = async (...args) => flagged.push(args);
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:freeze" }));
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "424242" }));
-  assert.deepEqual(frozen.map((c) => c.slice(0, 2)), [[424242, true], [424242, true]]);
+  assert.deepEqual(frozen.map((c) => c.slice(0, 2)), [[1780243205, true], [1780243205, true]]);
   assert.equal(frozen[0][4], true, "freeze dry-run before applying");
   assert.equal(frozen[1][5], "777");
   const freezeReply = calls.filter((call) => call.method === "sendMessage").at(-1);
@@ -742,11 +755,11 @@ test("moderation buttons freeze, flag scam and flag fake via the gramsrv API", a
 
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:scam" }));
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "424242 on" }));
-  assert.deepEqual(flagged.at(-1).slice(0, 3), [424242, true, false], "scam sets the scam flag and leaves fake untouched");
+  assert.deepEqual(flagged.at(-1).slice(0, 3), [1780243205, true, false], "scam sets the scam flag and leaves fake untouched");
 
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:fake" }));
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "424242" }));
-  assert.deepEqual(flagged.at(-1).slice(0, 3), [424242, false, true], "fake sets the fake flag and leaves scam untouched");
+  assert.deepEqual(flagged.at(-1).slice(0, 3), [1780243205, false, true], "fake sets the fake flag and leaves scam untouched");
   const fakeReply = calls.filter((call) => call.method === "sendMessage").at(-1);
   assert.match(fakeReply.payload.text, /фейк|fake/i);
 });
@@ -764,4 +777,26 @@ test("admin lookup resolves an @username and shows the gramsrv account id", asyn
   const sent = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
   assert.match(sent.payload.text, /@durov/, "the username is shown in the result");
   assert.match(sent.payload.text, /gramsrv_id=<code>424242<\/code>/, "the gramsrv account id is displayed");
+});
+
+test("admin grant and moderation refuse a target without a linked gramsrv account", async () => {
+  const { bot, calls, config, db, gramsrv } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 10, first_name: "Target", language_code: "ru" }, 10, "ru");
+  let mints = 0, verifies = 0;
+  gramsrv.mintUsername = async () => { mints++; return {}; };
+  gramsrv.setVerified = async () => { verifies++; return {}; };
+
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grantusername" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10 abcd" }));
+  assert.equal(mints, 0, "no mint happens without a linked gramsrv account");
+  const grantReply = calls.filter((call) => call.method === "sendMessage").at(-1);
+  assert.match(grantReply.payload.text, /нет привязанного аккаунта Gramsrv|no linked Gramsrv account/i);
+
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:verified" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10" }));
+  assert.equal(verifies, 0, "no moderation command runs without a linked gramsrv account");
+  const modReply = calls.filter((call) => call.method === "sendMessage").at(-1);
+  assert.match(modReply.payload.text, /нет привязанного аккаунта Gramsrv|no linked Gramsrv account/i);
 });
