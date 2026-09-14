@@ -20,11 +20,10 @@ func TestAccountFreezeNotificationPushesCurrentViewerProjection(t *testing.T) {
 	)
 	sessions := &captureSessions{}
 	freezeSvc := &freezeWorkerService{}
-	users := &freezeWorkerUsers{user: domain.User{
-		ID:                 frozenID,
-		FirstName:          "Frozen",
-		RestrictionReasons: domain.AccountFrozenRestrictionReasons(),
-	}}
+	projectedBase := domain.User{ID: frozenID, FirstName: "Frozen", Deleted: true}
+	tombstone := projectedBase.DeletedTombstone()
+	tombstone.FrozenForViewer = true
+	users := &freezeWorkerUsers{user: tombstone}
 	r := New(Config{}, Deps{
 		AccountFreezeNotifications: freezeSvc,
 		Users:                      users,
@@ -49,12 +48,17 @@ func TestAccountFreezeNotificationPushesCurrentViewerProjection(t *testing.T) {
 		t.Fatalf("update = %#v, want updateUser(%d)", updates.Updates[0], frozenID)
 	}
 	projected, ok := updates.Users[0].(*tg.User)
-	if !ok || !projected.Restricted {
-		t.Fatalf("projected user = %#v, want restricted user", updates.Users[0])
+	if !ok || !projected.Deleted {
+		t.Fatalf("projected user = %#v, want deleted user (frozen shown as deleted to peers)", updates.Users[0])
 	}
-	reasons, ok := projected.GetRestrictionReason()
-	if !ok || len(reasons) != 1 || reasons[0].Reason != "frozen" {
-		t.Fatalf("projected restriction = %+v ok=%v", reasons, ok)
+	if firstName, _ := projected.GetFirstName(); firstName != "" {
+		t.Fatalf("projected user = %#v, want persona stripped", updates.Users[0])
+	}
+	if username, _ := projected.GetUsername(); username != "" {
+		t.Fatalf("projected user = %#v, want persona stripped", updates.Users[0])
+	}
+	if icon, _ := projected.GetBotVerificationIcon(); icon != accountFrozenMarkIcon {
+		t.Fatalf("projected user = %#v, want frozen mark icon %d", updates.Users[0], accountFrozenMarkIcon)
 	}
 }
 

@@ -635,6 +635,9 @@ func (r *Router) onPaymentsSendStarsForm(ctx context.Context, req *tg.PaymentsSe
 	if gift.RequirePremium && !buyerPremium {
 		return nil, tgerr400("PREMIUM_ACCOUNT_REQUIRED")
 	}
+	if gift.SupportOnly && !r.viewerSupport(ctx, userID) {
+		return nil, tgerr.New(400, "STARGIFT_USAGE_LIMITED")
+	}
 	upgradeStars := int64(0)
 	if inv.IncludeUpgrade {
 		if gift.UpgradeStars <= 0 || gift.UpgradeIssued >= gift.UpgradeTotal {

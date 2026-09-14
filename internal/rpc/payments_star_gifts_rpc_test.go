@@ -165,6 +165,75 @@ func TestStarGiftPurchaseRequiresActivePremium(t *testing.T) {
 	}
 }
 
+func TestStarGiftSupportOnlyGate(t *testing.T) {
+	ctx := context.Background()
+	users := memory.NewUserStore()
+	dialogs := memory.NewDialogStore()
+	msgStore := memory.NewMessageStore(dialogs)
+	channelStore := memory.NewChannelStore()
+	regular, err := users.Create(ctx, domain.User{AccessHash: 7111, Phone: "15550007111", FirstName: "Regular"})
+	if err != nil {
+		t.Fatalf("create regular: %v", err)
+	}
+	helper, err := users.Create(ctx, domain.User{AccessHash: 7112, Phone: "15550007112", FirstName: "Support", Support: true})
+	if err != nil {
+		t.Fatalf("create support: %v", err)
+	}
+	recipient, err := users.Create(ctx, domain.User{AccessHash: 7113, Phone: "15550007113", FirstName: "Recipient"})
+	if err != nil {
+		t.Fatalf("create recipient: %v", err)
+	}
+	gift := domain.StarGift{
+		ID: 8002, RevisionID: 9002, Stars: 50, ConvertStars: 50, Title: "Beta", SupportOnly: true,
+		Sticker: domain.Document{ID: 701, AccessHash: 8, DCID: 2, MimeType: "application/x-tgsticker", Attributes: []domain.DocumentAttribute{{Kind: domain.DocAttrSticker}}},
+	}
+	giftStore := memory.NewStarGiftStore()
+	giftStore.SeedCatalog([]domain.StarGift{gift})
+	gifts := appstargifts.NewService(giftStore, nil, 2)
+	starsStore := newStarsTopupRPCStore()
+	r := New(Config{DC: 2, IP: "127.0.0.1", Port: 2398, PublicBaseURL: "https://links.example.test"}, Deps{
+		Users:    appusers.NewService(users),
+		Messages: appmessages.NewService(msgStore, dialogs),
+		Channels: appchannels.NewService(channelStore),
+		Stars:    appstars.NewService(starsStore, appstars.WithStartingGrant(1000), appstars.WithPurchaseStore(starsStore)),
+		Gifts:    gifts,
+	}, zaptest.NewLogger(t), clock.System)
+
+	inv := &tg.InputInvoiceStarGift{Peer: &tg.InputPeerUser{UserID: recipient.ID, AccessHash: recipient.AccessHash}, GiftID: gift.ID}
+
+	regularCtx := WithUserID(ctx, regular.ID)
+	checkRes, err := r.onPaymentsCheckCanSendGift(regularCtx, &tg.PaymentsCheckCanSendGiftRequest{GiftID: gift.ID})
+	if err != nil {
+		t.Fatalf("regular checkCanSendGift err=%v", err)
+	}
+	if _, ok := checkRes.(*tg.PaymentsCheckCanSendGiftResultFail); !ok {
+		t.Fatalf("regular checkCanSendGift result=%T, want ResultFail (sold out)", checkRes)
+	}
+
+	supportCtx := WithUserID(ctx, helper.ID)
+	checkResSupport, err := r.onPaymentsCheckCanSendGift(supportCtx, &tg.PaymentsCheckCanSendGiftRequest{GiftID: gift.ID})
+	if err != nil {
+		t.Fatalf("support checkCanSendGift err=%v", err)
+	}
+	if _, ok := checkResSupport.(*tg.PaymentsCheckCanSendGiftResultOk); !ok {
+		t.Fatalf("support checkCanSendGift result=%T, want ResultOk", checkResSupport)
+	}
+	formRes, err := r.onPaymentsGetPaymentForm(supportCtx, &tg.PaymentsGetPaymentFormRequest{Invoice: inv})
+	if err != nil {
+		t.Fatalf("support getPaymentForm: %v", err)
+	}
+	form, ok := formRes.(*tg.PaymentsPaymentFormStarGift)
+	if !ok {
+		t.Fatalf("support gift form=%T", formRes)
+	}
+	if _, err := r.onPaymentsSendStarsForm(supportCtx, &tg.PaymentsSendStarsFormRequest{FormID: form.FormID, Invoice: inv}); err != nil {
+		t.Fatalf("support gift purchase: %v", err)
+	}
+	if _, err := r.onPaymentsSendStarsForm(regularCtx, &tg.PaymentsSendStarsFormRequest{FormID: form.FormID, Invoice: inv}); !tgerr.Is(err, "STARGIFT_USAGE_LIMITED") {
+		t.Fatalf("regular sendStarsForm err=%v, want STARGIFT_USAGE_LIMITED", err)
+	}
+}
+
 func TestStarsGiveawayCatalogFormSettlementReplayAndInfo(t *testing.T) {
 	ctx := context.Background()
 	now := 1_700_000_100
