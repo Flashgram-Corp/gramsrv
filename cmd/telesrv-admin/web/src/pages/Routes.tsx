@@ -32,14 +32,10 @@ import { StoragePage } from "./StoragePage";
 import { StickerSetsPage } from "./StickerSetsPage";
 import {
   PermissionGate,
-  permissionAdminsManage,
-  permissionAuditRead,
   permissionBotVerificationReview,
   permissionPremiumManage,
   permissionVerificationReview
 } from "../permissions";
-import { AdminUsersPage } from "./AdminUsersPage";
-import { AuditLogPage } from "./AuditLogPage";
 
 export function Routes({ route, navigate }: { route: RouteState; navigate: Navigate }) {
   const accountID = route.path.match(/^\/accounts\/(\d+)$/)?.[1];
@@ -81,20 +77,6 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
     return (
       <PermissionGate permission={permissionVerificationReview}>
         <VerificationPage navigate={navigate} />
-      </PermissionGate>
-    );
-  }
-  if (route.path === "/admin-users") {
-    return (
-      <PermissionGate permission={permissionAdminsManage}>
-        <AdminUsersPage />
-      </PermissionGate>
-    );
-  }
-  if (route.path === "/audit-log") {
-    return (
-      <PermissionGate permission={permissionAuditRead}>
-        <AuditLogPage />
       </PermissionGate>
     );
   }

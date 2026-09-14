@@ -789,56 +789,6 @@ export type AdminLoginResult = AdminSession & {
   csrf_token: string;
 };
 
-// One admin console operator. Mirrors AdminConsoleUser in adminusers.go; the
-// password hash deliberately has no representation here.
-export type AdminConsoleUser = {
-  id: number;
-  username: string;
-  permissions: string[];
-  enabled: boolean;
-  token_epoch: number;
-  created_at: string;
-  updated_at: string;
-  last_login_at?: string | null;
-};
-
-// The built-in operator backed by TELESRV_ADMIN_UI_PASSWORD / _TOKEN. It has no
-// database row, so it carries no id and cannot be edited from the panel.
-export type AdminConsoleSystemOperator = {
-  username: string;
-  permissions: string[];
-  enabled: boolean;
-  system: true;
-};
-
-export type AdminConsoleUserList = {
-  system?: AdminConsoleSystemOperator;
-  rows: AdminConsoleUser[];
-  // The rights the server is willing to assign, so the editor cannot drift
-  // from what the routes actually enforce.
-  available_permissions: string[];
-};
-
-// One row of the global action trail served by GET /api/audit-logs (audit.go).
-export type AuditLogEntry = {
-  id: number;
-  command_id: string;
-  actor: string;
-  action: string;
-  dry_run: boolean;
-  reason: string;
-  status: string;
-  error?: string;
-  result?: string;
-  created_at: string;
-  target_type?: string;
-  target_id?: number;
-};
-
-export type AuditLogListResponse = {
-  rows: AuditLogEntry[];
-};
-
 export type MessageDetail = {
   Message: MessageRow;
   MessageJSON: string;
