@@ -252,10 +252,16 @@ func TestProjectorAccountFreezeIsViewerScopedAndReversible(t *testing.T) {
 		t.Fatalf("ForViewer(other): %v", err)
 	}
 	got := projectionUser(t, otherView, frozenUserID)
-	if !reflect.DeepEqual(got.RestrictionReasons, domain.AccountFrozenRestrictionReasons()) {
-		t.Fatalf("other-view restriction = %+v, want frozen restriction", got.RestrictionReasons)
+	if !got.Deleted {
+		t.Fatalf("other-view Deleted = false, want true (frozen account shown as deleted to peers)")
 	}
-	if base[0].RestrictionReasons[0].Reason != "stale" {
+	if !got.FrozenForViewer {
+		t.Fatalf("other-view FrozenForViewer = false, want true (mark flows to RPC boundary)")
+	}
+	if got.FirstName != "" || got.Username != "" || len(got.RestrictionReasons) != 0 {
+		t.Fatalf("other-view kept persona fields: %+v, want tombstone", got)
+	}
+	if base[0].Deleted {
 		t.Fatalf("projection mutated base user: %+v", base[0])
 	}
 
@@ -263,28 +269,28 @@ func TestProjectorAccountFreezeIsViewerScopedAndReversible(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForViewer(self): %v", err)
 	}
-	if reasons := projectionUser(t, selfView, frozenUserID).RestrictionReasons; len(reasons) != 0 {
-		t.Fatalf("self-view restriction = %+v, want none", reasons)
+	if self := projectionUser(t, selfView, frozenUserID); self.Deleted || self.FrozenForViewer || self.FirstName != "Frozen" || len(self.RestrictionReasons) != 0 {
+		t.Fatalf("self-view = %+v, want live account without restriction", self)
 	}
 
 	batch, err := projector.ForViewers(ctx, []int64{otherViewer, frozenUserID}, base)
 	if err != nil {
 		t.Fatalf("ForViewers: %v", err)
 	}
-	if reasons := projectionUser(t, batch[otherViewer], frozenUserID).RestrictionReasons; !reflect.DeepEqual(reasons, domain.AccountFrozenRestrictionReasons()) {
-		t.Fatalf("batch other-view restriction = %+v", reasons)
+	if peer := projectionUser(t, batch[otherViewer], frozenUserID); !peer.Deleted || !peer.FrozenForViewer || len(peer.RestrictionReasons) != 0 {
+		t.Fatalf("batch other-view = %+v, want deleted tombstone with frozen mark", peer)
 	}
-	if reasons := projectionUser(t, batch[frozenUserID], frozenUserID).RestrictionReasons; len(reasons) != 0 {
-		t.Fatalf("batch self-view restriction = %+v, want none", reasons)
+	if self := projectionUser(t, batch[frozenUserID], frozenUserID); self.Deleted || self.FrozenForViewer || self.FirstName != "Frozen" || len(self.RestrictionReasons) != 0 {
+		t.Fatalf("batch self-view = %+v, want live account", self)
 	}
 
 	freezes.items = nil
-	unfrozenView, err := projector.ForViewer(ctx, otherViewer, otherView)
+	unfrozenView, err := projector.ForViewer(ctx, otherViewer, base)
 	if err != nil {
 		t.Fatalf("ForViewer(after unfreeze): %v", err)
 	}
-	if reasons := projectionUser(t, unfrozenView, frozenUserID).RestrictionReasons; len(reasons) != 0 {
-		t.Fatalf("unfrozen projection retained restriction = %+v", reasons)
+	if unfrozen := projectionUser(t, unfrozenView, frozenUserID); unfrozen.Deleted || unfrozen.FrozenForViewer || unfrozen.FirstName != "Frozen" || len(unfrozen.RestrictionReasons) != 0 {
+		t.Fatalf("unfrozen projection = %+v, want live account", unfrozen)
 	}
 }
 
