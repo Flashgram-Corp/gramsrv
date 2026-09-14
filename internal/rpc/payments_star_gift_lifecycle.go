@@ -228,6 +228,9 @@ func (r *Router) starGiftAuctionBidTarget(ctx context.Context, userID int64, inv
 	if err != nil {
 		return domain.StarGiftAuction{}, domain.Peer{}, 0, starGiftLifecycleErr(err)
 	}
+	if state.Gift.SupportOnly && !r.viewerSupport(ctx, userID) {
+		return domain.StarGiftAuction{}, domain.Peer{}, 0, starGiftInvalidErr()
+	}
 	oldAmount := state.UserState.BidAmount
 	peer := domain.Peer{Type: domain.PeerTypeUser, ID: userID}
 	if inv.UpdateBid {
@@ -422,9 +425,15 @@ func (r *Router) onPaymentsCheckCanSendGift(ctx context.Context, req *tg.Payment
 	if !found {
 		return nil, starGiftInvalidErr()
 	}
+	userID, _, err := r.currentUserID(ctx)
+	if err != nil {
+		return nil, internalErr()
+	}
 	now := int(r.clock.Now().Unix())
 	switch {
 	case gift.SoldOut || gift.Limited && gift.AvailabilityRemains <= 0:
+		return &tg.PaymentsCheckCanSendGiftResultFail{Reason: tg.TextWithEntities{Text: "This gift is sold out."}}, nil
+	case gift.SupportOnly && !r.viewerSupport(ctx, userID):
 		return &tg.PaymentsCheckCanSendGiftResultFail{Reason: tg.TextWithEntities{Text: "This gift is sold out."}}, nil
 	case gift.LockedUntilDate > now:
 		return &tg.PaymentsCheckCanSendGiftResultFail{Reason: tg.TextWithEntities{Text: "This gift is not available yet."}}, nil

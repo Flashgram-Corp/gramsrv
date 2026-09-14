@@ -785,6 +785,7 @@ type ImportStarGiftRequest struct {
 	Stars        int64  `json:"stars"`
 	ConvertStars int64  `json:"convert_stars"`
 	Enabled      bool   `json:"enabled"`
+	SupportOnly  bool   `json:"support_only,omitempty"`
 	SortOrder    int    `json:"sort_order"`
 	FileName     string `json:"file_name"`
 	ContentSHA   string `json:"content_sha256"`
@@ -813,6 +814,7 @@ type ImportOfficialStarGiftRequest struct {
 	ConvertStars       int64  `json:"convert_stars"`
 	Enabled            bool   `json:"enabled"`
 	SortOrder          int    `json:"sort_order"`
+	SupportOnly        bool   `json:"support_only,omitempty"`
 	IncludeCollectible bool   `json:"include_collectible"`
 	UpgradeStars       int64  `json:"upgrade_stars,omitempty"`
 	SupplyTotal        int    `json:"supply_total,omitempty"`
@@ -3598,7 +3600,7 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 		details := map[string]any{
 			"gift_id": strconv.FormatInt(req.GiftID, 10), "title": strings.TrimSpace(req.Title),
 			"stars": strconv.FormatInt(req.Stars, 10), "convert_stars": strconv.FormatInt(req.ConvertStars, 10),
-			"enabled": req.Enabled, "sort_order": req.SortOrder,
+			"enabled": req.Enabled, "sort_order": req.SortOrder, "support_only": req.SupportOnly,
 			"source_format": animation.SourceFormat, "source_name": animation.SourceName,
 			"sha256": req.ContentSHA, "width": animation.Width, "height": animation.Height,
 			"frame_rate": animation.FrameRate, "compressed_bytes": len(animation.TGS), "json_bytes": len(animation.JSON),
@@ -3621,7 +3623,7 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 		}
 		entry, err := s.gifts.CreateCatalogRevision(ctx, domain.StarGiftCatalogWrite{
 			GiftID: req.GiftID, Title: req.Title, Stars: req.Stars, ConvertStars: req.ConvertStars,
-			Enabled: req.Enabled, SortOrder: req.SortOrder, Animation: animation,
+			Enabled: req.Enabled, SortOrder: req.SortOrder, SupportOnly: req.SupportOnly, Animation: animation,
 			Actor: req.Actor, CommandID: req.CommandID,
 			Auction: lifecycle.Auction, AuctionSlug: lifecycle.AuctionSlug, GiftsPerRound: lifecycle.GiftsPerRound,
 			AuctionStartDate: lifecycle.AuctionStartDate, AuctionRoundDuration: lifecycle.AuctionRoundDuration,
@@ -3827,6 +3829,7 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 		// local lifecycle writes. Existing inventory is preserved under the store lock.
 		Limited: limited, SoldOut: false, Birthday: bundle.Gift.Birthday,
 		RequirePremium: bundle.Gift.RequirePremium, LimitedPerUser: bundle.Gift.LimitedPerUser,
+		SupportOnly: req.SupportOnly,
 		PeerColorAvailable: bundle.Gift.PeerColorAvailable, Auction: bundle.Gift.Auction,
 		AvailabilityRemains: 0, AvailabilityTotal: availabilityTotal,
 		AvailabilityResale: 0, FirstSaleDate: 0,
@@ -3850,6 +3853,7 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 			"official_limited": bundle.Gift.Limited, "official_sold_out": bundle.Gift.SoldOut,
 			"official_auction": bundle.Gift.Auction, "official_birthday": bundle.Gift.Birthday,
 			"official_require_premium":      bundle.Gift.RequirePremium,
+			"support_only":                 req.SupportOnly,
 			"official_availability_remains": bundle.Gift.AvailabilityRemains,
 			"official_availability_total":   bundle.Gift.AvailabilityTotal,
 			"official_availability_resale":  bundle.Gift.AvailabilityResale,
