@@ -98,7 +98,7 @@ func (s *AdminStore) ListRecentCommands(ctx context.Context, limit int, actor st
 	}
 	rows, err := s.db.Query(ctx, `
 SELECT command_id, actor, action, target_user_id, target_peer_type, target_peer_id,
-	dry_run, reason, request, result, status, error, created_at, completed_at
+	dry_run, reason, request, result, status, error, created_at, NULL::timestamptz AS completed_at
 FROM admin_audit_logs
 WHERE ($1 = '' OR actor = $1)
 ORDER BY created_at DESC, command_id DESC
