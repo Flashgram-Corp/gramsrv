@@ -26,6 +26,14 @@ function positiveInteger(value, max = Number.MAX_SAFE_INTEGER) {
   const number = Number(value);
   return Number.isSafeInteger(number) && number > 0 && number <= max ? number : 0;
 }
+function parseModerationTarget(value) {
+  const [idRaw, stateRaw] = String(value ?? "").split(/\s+/);
+  const id = Number(idRaw);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error("invalid Telegram ID");
+  if (stateRaw === undefined || /^(1|on|yes|true)$/i.test(stateRaw)) return { id, on: true };
+  if (/^(0|off|no|false)$/i.test(stateRaw)) return { id, on: false };
+  throw new Error("invalid state: use on or off");
+}
 export function isStartCommand(text) { return /^\/start(?:@\w+)?(?:\s|$)/i.test(text ?? ""); }
 
 export function fulfillmentForSale(sale, starsRate = 20, prices = {}) {
@@ -46,18 +54,18 @@ export function fulfillmentForSale(sale, starsRate = 20, prices = {}) {
   throw new Error("legacy number sale has no exact fulfillment data and requires manual review");
 }
 
-export async function reverseSaleFulfillment(sale, db, gramsrv) {
+export async function reverseSaleFulfillment(sale, db, gramsrv, actor = "") {
   const { starsRate, prices } = await catalogContext(db);
   const item = fulfillmentForSale(sale, starsRate, prices);
   const key = `refund:${sale.charge_id}:${item.kind}`;
   if (item.kind === "custom") return item;
-  if (item.kind === "stars") await gramsrv.debitStars(item.recipientID, item.amount, "Telegram bot refund", key);
+  if (item.kind === "stars") await gramsrv.debitStars(item.recipientID, item.amount, "Telegram bot refund", key, false, actor);
   else if (item.kind === "premium") {
     if (!positiveInteger(item.entitlementID)) throw new Error("legacy Premium sale has no entitlement ID; automatic reversal is unsafe");
-    await gramsrv.revokePremium(item.recipientID, item.entitlementID, "Telegram bot refund", key);
+    await gramsrv.revokePremium(item.recipientID, item.entitlementID, "Telegram bot refund", key, actor);
   } else if (item.kind === "username") {
     if (!item.username) throw new Error("sale has no stored @username");
-    await gramsrv.revokeUsername(item.username, item.recipientID, key);
+    await gramsrv.revokeUsername(item.username, item.recipientID, key, false, actor);
   } else if (item.kind === "number") {
     if (!positiveInteger(item.numberID) || !item.phone) throw new Error("sale has no stored number data");
     await db.revokePurchasedNumber(item.ownerID, item.numberID, item.phone, (phone) => gramsrv.resolveUserByPhone(phone));
@@ -65,12 +73,12 @@ export async function reverseSaleFulfillment(sale, db, gramsrv) {
   return item;
 }
 
-export async function executeCompensatedRefund({ sale, telegramID, db, gramsrv, refundStarPayment }) {
+export async function executeCompensatedRefund({ sale, telegramID, db, gramsrv, refundStarPayment, actor = "" }) {
   const chargeID = sale.charge_id;
   const refund = await db.beginRefund(chargeID, telegramID);
   try {
     if (!refund.internal_reversed) {
-      await reverseSaleFulfillment(sale, db, gramsrv);
+      await reverseSaleFulfillment(sale, db, gramsrv, actor);
       await db.markRefundInternal(chargeID);
     }
     try { await refundStarPayment(telegramID, chargeID); }
@@ -171,13 +179,19 @@ export function accountKeyboard(language) {
 export function adminKeyboard(language) {
   return new InlineKeyboard()
     .text(translate(language, "adminStatsButton"), "admin:stats").text(translate(language, "adminLookupButton"), "admin:lookup").row()
-    .text(translate(language, "adminStarsButton"), "admin:stars").text(translate(language, "adminPremiumButton"), "admin:premium").row()
-    .text(translate(language, "adminPromoButton"), "admin:promo").text(translate(language, "adminGiveawayButton"), "admin:giveaway").row()
-    .text(translate(language, "adminBonusButton"), "admin:bonus").text(translate(language, "adminInvoiceButton"), "admin:invoice").row()
-    .text(translate(language, "adminAccessButton"), "admin:access").text(translate(language, "adminRefundButton"), "admin:refund").row()
+    .text(translate(language, "adminGrantsButton"), "admin:grants").text(translate(language, "adminVerifiedButton"), "admin:verified").row()
+    .text(translate(language, "adminFreezeButton"), "admin:freeze").text(translate(language, "adminScamButton"), "admin:scam").text(translate(language, "adminFakeButton"), "admin:fake").row()
+    .text(translate(language, "adminInvoiceButton"), "admin:invoice").text(translate(language, "adminRefundButton"), "admin:refund").row()
     .text(translate(language, "adminReplyButton"), "admin:reply").text(translate(language, "adminPricesButton"), "admin:prices").row()
-    .text(translate(language, "adminBindPhoneButton"), "admin:bindphone").text(translate(language, "adminGrantUsernameButton"), "admin:grantusername").row()
-    .text(translate(language, "adminSalesButton"), "admin:sales").text(translate(language, "back"), "menu:home");
+    .text(translate(language, "adminPromoButton"), "admin:promo").text(translate(language, "adminGiveawayButton"), "admin:giveaway").row()
+    .text(translate(language, "adminAccessButton"), "admin:access").text(translate(language, "back"), "menu:home");
+}
+
+export function adminGrantsKeyboard(language) {
+  return new InlineKeyboard()
+    .text(translate(language, "adminStarsButton"), "admin:stars").text(translate(language, "adminPremiumButton"), "admin:premium").row()
+    .text(translate(language, "adminGrantUsernameButton"), "admin:grantusername").text(translate(language, "adminBindPhoneButton"), "admin:bindphone").row()
+    .text(translate(language, "back"), "admin:menu");
 }
 
 export function commandList(language) {
@@ -838,18 +852,16 @@ export function createBot({ config, db, gramsrv }) {
       await db.setPending(ctx.from.id, "admin_prices");
       return editOrReply(ctx, `${tr(ctx.from.id, "adminPromptPrices", { rate: String(starsRate) })}\n\n${lines.join("\n")}`, backKeyboard(language, "admin:menu"));
     }
+    if (action === "grants") return editOrReply(ctx, tr(ctx.from.id, "adminGrantsTitle"), adminGrantsKeyboard(language));
     if (action === "stats") {
       const stats = await db.stats();
-      return editOrReply(ctx, tr(ctx.from.id, "adminStats", stats), backKeyboard(language, "admin:menu"));
-    }
-    if (action === "sales") {
       const rows = await db.recentSales(10);
-      const lines = rows.map((s) => {
+      const sales = rows.map((s) => {
         const name = String(s.buyer_name ?? s.buyer_id ?? "");
         const product = String(s.product ?? s.title ?? "");
         return `#${s.id} · <code>${escapeHTML(s.charge_id)}</code> · ${escapeHTML(product)} · ${s.stars_price} ⭐ · ${escapeHTML(name)}`;
       });
-      return editOrReply(ctx, `${tr(ctx.from.id, "adminRecentSales")}\n\n${lines.join("\n") || tr(ctx.from.id, "noSales")}`, backKeyboard(language, "admin:menu"));
+      return editOrReply(ctx, `${tr(ctx.from.id, "adminStats", stats)}\n\n${tr(ctx.from.id, "adminRecentSales")}\n${sales.join("\n") || tr(ctx.from.id, "noSales")}`, backKeyboard(language, "admin:menu"));
     }
     if (action === "lookup") {
       await db.setPending(ctx.from.id, "admin_lookup");
@@ -857,8 +869,9 @@ export function createBot({ config, db, gramsrv }) {
     }
     const promptKeys = {
       broadcast: "adminPromptBroadcast", stars: "adminPromptStars", premium: "adminPromptPremium", promo: "adminPromptPromo",
-      giveaway: "adminPromptGiveaway", bonus: "adminPromptBonus", invoice: "adminPromptInvoice", access: "adminPromptAccess",
+      giveaway: "adminPromptGiveaway", invoice: "adminPromptInvoice", access: "adminPromptAccess",
       refund: "adminPromptRefund", reply: "adminPromptReply", bindphone: "adminPromptBindPhone", grantusername: "adminPromptGrantUsername",
+      verified: "adminPromptVerified", freeze: "adminPromptFreeze", scam: "adminPromptScam", fake: "adminPromptFake",
     };
     if (promptKeys[action]) {
       await db.setPending(ctx.from.id, `admin_${action}`, { operationID: `admin:${ctx.from.id}:${Date.now()}:${randomInt(1_000_000)}` });
@@ -970,12 +983,17 @@ export function createBot({ config, db, gramsrv }) {
       if (pending.kind === "admin_lookup") {
         await db.clearPending(ctx.from.id);
         const isPhone = /^\+/.test(input);
-        const result = isPhone ? await db.adminLookupByNumber(input) : await db.adminLookupByTelegramID(Number(input));
+        const isID = /^\d+$/.test(input);
+        const result = isPhone
+          ? await db.adminLookupByNumber(input)
+          : isID
+            ? await db.adminLookupByTelegramID(Number(input))
+            : await db.adminLookupByUsername(input.replace(/^@/, ""));
         if (!result) return adminResult(tr(ctx.from.id, "adminLookupNotFound"));
         const lines = [];
         if (result.user) {
           const u = result.user;
-          lines.push(`👤 <b>User</b>: <code>${u.telegram_id}</code> · @${escapeHTML(u.username || "—")} · lang=${u.language} · bonus=${u.bonus}`);
+          lines.push(`👤 <b>User</b>: <code>${u.telegram_id}</code> · @${escapeHTML(u.username || "—")} · lang=${u.language} · bonus=${u.bonus} · gramsrv_id=<code>${u.server_user_id}</code>`);
         }
         if (result.number) {
           const n = result.number;
@@ -1003,13 +1021,19 @@ export function createBot({ config, db, gramsrv }) {
       if (pending.kind === "admin_stars") {
         const [id, amount] = input.split(/\s+/).map(Number);
         if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(amount) || amount <= 0) throw new Error("invalid ID or amount");
-        await gramsrv.grantStars(id, amount, "Telegram bot administrator grant", pending.payload.operationID); await db.clearPending(ctx.from.id);
+        const actor = String(ctx.from.id);
+        await gramsrv.grantStars(id, amount, "Telegram bot administrator grant", "", true, actor);
+        await gramsrv.grantStars(id, amount, "Telegram bot administrator grant", pending.payload.operationID, false, actor);
+        await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, "starsGranted", { id, amount }));
       }
       if (pending.kind === "admin_premium") {
         const [id, months] = input.split(/\s+/).map(Number);
         if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(months) || months <= 0) throw new Error("invalid ID or months");
-        await gramsrv.grantPremium(id, months, "Telegram bot administrator grant", pending.payload.operationID); await db.clearPending(ctx.from.id);
+        const actor = String(ctx.from.id);
+        await gramsrv.grantPremium(id, months, "Telegram bot administrator grant", "", true, actor);
+        await gramsrv.grantPremium(id, months, "Telegram bot administrator grant", pending.payload.operationID, false, actor);
+        await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, "premiumGranted", { id, months }));
       }
       if (pending.kind === "admin_promo") {
@@ -1022,12 +1046,6 @@ export function createBot({ config, db, gramsrv }) {
         const [starsRaw, limitRaw, ...words] = input.split(/\s+/);
         const item = await db.createGiveaway(words.join(" "), Number(starsRaw), Number(limitRaw)); await db.clearPending(ctx.from.id);
         return ctx.reply(`🎁 ${escapeHTML(item.text)}`, { parse_mode: "HTML", reply_markup: new InlineKeyboard().text(tr(ctx.from.id, "claimReward"), `giveaway:${item.id}`).row().text(tr(ctx.from.id, "back"), "admin:menu") });
-      }
-      if (pending.kind === "admin_bonus") {
-        const [id, amount] = input.split(/\s+/).map(Number);
-        if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(amount) || amount === 0) throw new Error("invalid ID or amount");
-        const balance = await db.addBonus(id, amount); await db.clearPending(ctx.from.id);
-        return adminResult(tr(ctx.from.id, "bonusBalance", { id, balance }));
       }
       if (pending.kind === "admin_invoice") {
         const [idRaw, starsRaw, ...words] = input.split(/\s+/);
@@ -1053,7 +1071,9 @@ export function createBot({ config, db, gramsrv }) {
         if (number.format === "free") await db.bindVerifiedPhone(targetID, user.chat_id, number.phone);
         if (user.server_user_id > 0) {
           try {
-            await gramsrv.setPhone(user.server_user_id, number.phone, "Admin number bind", `admin:bindphone:${targetID}:${Date.now()}`);
+            const actor = String(ctx.from.id);
+            await gramsrv.setPhone(user.server_user_id, number.phone, "Admin number bind", "", true, actor);
+            await gramsrv.setPhone(user.server_user_id, number.phone, "Admin number bind", `admin:bindphone:${targetID}:${Date.now()}`, false, actor);
           } catch (error) {
             console.error("Admin bind set-phone failed", targetID, error);
             return adminResult(tr(ctx.from.id, "bindPhonePartial", { phone: escapeHTML(number.display), id: targetID }));
@@ -1065,20 +1085,53 @@ export function createBot({ config, db, gramsrv }) {
       if (pending.kind === "admin_grantusername") {
         const [idRaw, ...words] = input.split(/\s+/);
         const targetID = Number(idRaw);
-        const username = normalizeUsername(words.join(""));
+        const username = normalizeUsername(words.join(""), 4);
         if (!Number.isSafeInteger(targetID) || targetID <= 0 || !username) throw new Error("invalid Telegram ID or username");
         const user = await db.user(targetID);
         if (!user) return adminResult(tr(ctx.from.id, "userNotFound"));
         // A server-side dry run is the authoritative occupation check before a
         // zero-price grant (blind even for vault names). The real mint rechecks
         // inside its own command, so a gang between the two calls cannot win.
-        await gramsrv.mintUsername(targetID, username, 0, "", true).catch((error) => {
+        const actor = String(ctx.from.id);
+        await gramsrv.mintUsername(targetID, username, 0, "", true, actor).catch((error) => {
           if (/username occupied/i.test(String(error.message))) throw new Error("username occupied");
           throw error;
         });
-        await gramsrv.mintUsername(targetID, username, 0, `admin:grantusername:${targetID}:${username}:${Date.now()}`);
+        await gramsrv.mintUsername(targetID, username, 0, `admin:grantusername:${targetID}:${username}:${Date.now()}`, false, actor);
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, "grantUsernameDone", { username: escapeHTML(username), id: targetID }));
+      }
+      if (pending.kind === "admin_verified") {
+        const { id, on } = parseModerationTarget(input);
+        const actor = String(ctx.from.id);
+        await gramsrv.setVerified(id, on, "Telegram bot administrator moderation", "", true, actor);
+        await gramsrv.setVerified(id, on, "Telegram bot administrator moderation", `admin:verified:${id}:${Date.now()}`, false, actor);
+        await db.clearPending(ctx.from.id);
+        return adminResult(tr(ctx.from.id, on ? "verifiedDone" : "verifiedRemoved", { id }));
+      }
+      if (pending.kind === "admin_freeze") {
+        const { id, on } = parseModerationTarget(input);
+        const actor = String(ctx.from.id);
+        await gramsrv.setFrozen(id, on, "Telegram bot administrator moderation", "", true, actor);
+        await gramsrv.setFrozen(id, on, "Telegram bot administrator moderation", `admin:freeze:${id}:${Date.now()}`, false, actor);
+        await db.clearPending(ctx.from.id);
+        return adminResult(tr(ctx.from.id, on ? "frozenDone" : "unfrozenDone", { id }));
+      }
+      if (pending.kind === "admin_scam") {
+        const { id, on } = parseModerationTarget(input);
+        const actor = String(ctx.from.id);
+        await gramsrv.setFlags(id, on, false, "Telegram bot administrator moderation", "", true, actor);
+        await gramsrv.setFlags(id, on, false, "Telegram bot administrator moderation", `admin:scam:${id}:${Date.now()}`, false, actor);
+        await db.clearPending(ctx.from.id);
+        return adminResult(tr(ctx.from.id, on ? "scamFlagDone" : "scamFlagRemoved", { id }));
+      }
+      if (pending.kind === "admin_fake") {
+        const { id, on } = parseModerationTarget(input);
+        const actor = String(ctx.from.id);
+        await gramsrv.setFlags(id, false, on, "Telegram bot administrator moderation", "", true, actor);
+        await gramsrv.setFlags(id, false, on, "Telegram bot administrator moderation", `admin:fake:${id}:${Date.now()}`, false, actor);
+        await db.clearPending(ctx.from.id);
+        return adminResult(tr(ctx.from.id, on ? "fakeFlagDone" : "fakeFlagRemoved", { id }));
       }
       if (pending.kind === "admin_refund") {
         const parts = input.split(/\s+/);
@@ -1092,7 +1145,7 @@ export function createBot({ config, db, gramsrv }) {
         if (expectedBuyerID && sale.buyer_id !== expectedBuyerID) throw new Error("sale buyer mismatch");
         if (await db.isRefunded(chargeID)) throw new Error("payment was already refunded");
         const telegramID = sale.buyer_id;
-        await executeCompensatedRefund({ sale, telegramID, db, gramsrv, refundStarPayment: bot.api.refundStarPayment.bind(bot.api) });
+        await executeCompensatedRefund({ sale, telegramID, db, gramsrv, refundStarPayment: bot.api.refundStarPayment.bind(bot.api), actor: String(ctx.from.id) });
         await db.clearPending(ctx.from.id);
         await bot.api.sendMessage(telegramID, tr(telegramID, "paymentRefunded", { charge: escapeHTML(chargeID) }), { parse_mode: "HTML" }).catch(() => {});
         return adminResult(tr(ctx.from.id, "refundDone"));

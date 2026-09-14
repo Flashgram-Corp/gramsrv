@@ -15,21 +15,27 @@ export class GramsrvClient {
     return text ? JSON.parse(text) : {};
   }
 
-  command(reason, fields, idempotencyKey = "") {
+  command(reason, fields, idempotencyKey = "", actor = "") {
     const digest = idempotencyKey ? createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 40) : randomUUID();
-    return { command_id: `bot-${digest}`, actor: this.config.gramsrvActor, reason, dry_run: false, ...fields };
+    return { command_id: `bot-${digest}`, actor: actor || this.config.gramsrvActor, reason, dry_run: false, ...fields };
   }
 
-  grantStars(userID, amount, reason = "Telegram bot purchase", idempotencyKey = "") {
-    return this.post("/v1/accounts/grant-stars", this.command(reason, { user_id: userID, amount }, idempotencyKey));
+  grantStars(userID, amount, reason = "Telegram bot purchase", idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command(reason, { user_id: userID, amount }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/accounts/grant-stars", payload);
   }
 
-  debitStars(userID, amount, reason = "Telegram bot refund", idempotencyKey = "") {
-    return this.post("/v1/accounts/debit-stars", this.command(reason, { user_id: userID, amount }, idempotencyKey));
+  debitStars(userID, amount, reason = "Telegram bot refund", idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command(reason, { user_id: userID, amount }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/accounts/debit-stars", payload);
   }
 
-  setPhone(userID, phone, reason = "Telegram bot number purchase", idempotencyKey = "") {
-    return this.post("/v1/accounts/set-phone", this.command(reason, { user_id: userID, phone }, idempotencyKey));
+  setPhone(userID, phone, reason = "Telegram bot number purchase", idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command(reason, { user_id: userID, phone }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/accounts/set-phone", payload);
   }
 
   async resolveUserByPhone(phone) {
@@ -40,15 +46,35 @@ export class GramsrvClient {
     throw new Error("invalid account lookup response");
   }
 
-  grantPremium(userID, months, reason = "Telegram bot purchase", idempotencyKey = "") {
-    return this.post("/v1/accounts/grant-premium", this.command(reason, { user_id: userID, months }, idempotencyKey));
+  grantPremium(userID, months, reason = "Telegram bot purchase", idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command(reason, { user_id: userID, months }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/accounts/grant-premium", payload);
   }
 
-  revokePremium(userID, entitlementID, reason = "Telegram bot refund", idempotencyKey = "") {
-    return this.post("/v1/accounts/grant-premium", this.command(reason, { user_id: userID, months: 0, entitlement_id: entitlementID }, idempotencyKey));
+  revokePremium(userID, entitlementID, reason = "Telegram bot refund", idempotencyKey = "", actor = "") {
+    return this.post("/v1/accounts/grant-premium", this.command(reason, { user_id: userID, months: 0, entitlement_id: entitlementID }, idempotencyKey, actor));
   }
 
-  mintUsername(userID, username, bidTON, idempotencyKey = "", dryRun = false) {
+  setVerified(userID, verified, reason = "Telegram bot moderation", idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command(reason, { user_id: userID, verified }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/accounts/set-verified", payload);
+  }
+
+  setFrozen(userID, frozen, reason = "Telegram bot moderation", idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command(reason, { user_id: userID, frozen }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/accounts/set-frozen", payload);
+  }
+
+  setFlags(userID, scam, fake, reason = "Telegram bot moderation", idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command(reason, { user_id: userID, scam, fake }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/accounts/set-flags", payload);
+  }
+
+  mintUsername(userID, username, bidTON, idempotencyKey = "", dryRun = false, actor = "") {
     const amount = bidTON > 0 ? (BigInt(bidTON) * 1_000_000_000n).toString() : "0";
     const payload = this.command("Telegram bot purchase", {
       username,
@@ -59,15 +85,17 @@ export class GramsrvClient {
       crypto_amount: bidTON > 0 ? amount : "0",
       url: `${this.config.publicBaseURL}/nft/username/${username}`,
       purchase_date: Math.floor(Date.now() / 1000),
-    }, idempotencyKey);
+    }, idempotencyKey, actor);
     if (dryRun) payload.dry_run = true;
     return this.post("/v1/collectible-usernames/mint", payload);
   }
-  revokeUsername(username, expectedOwnerUserID, idempotencyKey = "") {
-    return this.post("/v1/collectible-usernames/revoke", this.command("Telegram bot refund", {
+  revokeUsername(username, expectedOwnerUserID, idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command("Telegram bot refund", {
       username,
       expected_owner_user_id: String(expectedOwnerUserID),
       burn: false,
-    }, idempotencyKey));
+    }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/collectible-usernames/revoke", payload);
   }
 }

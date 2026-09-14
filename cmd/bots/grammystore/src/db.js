@@ -764,6 +764,17 @@ export class BotDatabase {
     const verified = await this.verifiedPhone(telegramID);
     return { user, numbers, verifiedPhone: verified };
   }
+
+  async adminLookupByUsername(username) {
+    const normalized = username.trim().replace(/^@/, "").toLowerCase();
+    if (!/^[a-z0-9_]{1,32}$/.test(normalized)) return null;
+    const res = await this.pool.query("SELECT * FROM users WHERE lower(username) = $1 LIMIT 1", [normalized]);
+    const user = res.rows[0] ?? null;
+    if (!user) return null;
+    const numbers = await this.numbers(user.telegram_id);
+    const verified = await this.verifiedPhone(user.telegram_id);
+    return { user, numbers, verifiedPhone: verified };
+  }
 }
 
 export const internals = { generatedNumber, normalizePhone, dayKey, weekKey };

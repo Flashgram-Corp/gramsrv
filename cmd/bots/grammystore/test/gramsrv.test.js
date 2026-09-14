@@ -55,3 +55,48 @@ test("a paid purchase still bills the crypto amount like a sale", async () => {
   assert.equal(payload.crypto_amount, payload.amount);
   assert.equal(payload.dry_run, false);
 });
+
+test("setVerified posts the flags and command metadata and forwards the actor", async () => {
+  const client = new GramsrvClient({ gramsrvActor: "test" });
+  const calls = [];
+  client.post = async (route, body) => { calls.push({ route, body }); return {}; };
+  await client.setVerified(10, true, "Admin moderation", "", true, "777");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].route, "/v1/accounts/set-verified");
+  assert.deepEqual(calls[0].body, {
+    user_id: 10, verified: true,
+    command_id: calls[0].body.command_id, reason: "Admin moderation", dry_run: true, actor: "777",
+  });
+});
+
+test("setFrozen posts frozen state and dry-run metadata", async () => {
+  const client = new GramsrvClient({ gramsrvActor: "test" });
+  const calls = [];
+  client.post = async (route, body) => { calls.push({ route, body }); return {}; };
+  await client.setFrozen(10, false, "Admin moderation", "admin:freeze:10:1", false, "777");
+  assert.equal(calls[0].route, "/v1/accounts/set-frozen");
+  const second = client.command("Admin moderation", { user_id: 10, frozen: false }, "admin:freeze:10:1");
+  assert.deepEqual(calls[0].body, {
+    user_id: 10, frozen: false,
+    command_id: second.command_id, reason: "Admin moderation", dry_run: false, actor: "777",
+  });
+});
+
+test("setFlags posts scam and fake flags", async () => {
+  const client = new GramsrvClient({ gramsrvActor: "test" });
+  let body;
+  client.post = async (route, payload) => { body = payload; return {}; };
+  await client.setFlags(10, true, false, "Admin moderation", "", true, "777");
+  assert.deepEqual(body, {
+    user_id: 10, scam: true, fake: false,
+    command_id: body.command_id, reason: "Admin moderation", dry_run: true, actor: "777",
+  });
+});
+
+test("actor defaults to the configured gramsrv actor when omitted", async () => {
+  const client = new GramsrvClient({ gramsrvActor: "bot-service" });
+  let body;
+  client.post = async (route, payload) => { body = payload; return {}; };
+  await client.setVerified(10, true, "Admin moderation", "", true);
+  assert.equal(body.actor, "bot-service");
+});
