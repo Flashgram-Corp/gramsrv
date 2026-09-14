@@ -131,6 +131,8 @@ function mockDb() {
     adminLookupByNumber: async () => null,
     adminLookupByTelegramID: async () => null,
     adminLookupByUsername: async () => null,
+    userByUsername: async (username) => { for (const u of users.values()) if (String(u.username ?? "").toLowerCase() === String(username ?? "").replace(/^@/, "").toLowerCase()) return u; return null; },
+    adminRecentActivity: async () => ({ sales: [], refunds: [] }),
     close: async () => {},
   };
   return db;
@@ -631,7 +633,7 @@ test("admin can set and see the daily free number limit in the prices panel", as
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:prices" }));
   const prompt = calls.filter((call) => call.method === "editMessageText").at(-1);
   assert.match(prompt.payload.text, /\bfree N\b/, "the panel documents the free limit command");
-  assert.match(prompt.payload.text, /Дневной лимит смены бесплатного номера/);
+  assert.match(prompt.payload.text, /\n<code>free 0<\/code>$/, "the current free limit renders as a copyable command");
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "free 3" }));
   assert.equal(db._settings.get("free_number_daily_limit"), "3");
   const saved = calls.filter((call) => call.method === "sendMessage").find((call) => /Обновлено позиций: 1|Updated 1 item/.test(call.payload.text));
@@ -844,4 +846,96 @@ test("admin grant and moderation refuse a target without a linked gramsrv accoun
   assert.equal(verifies, 0, "no moderation command runs without a linked gramsrv account");
   const modReply = calls.filter((call) => call.method === "sendMessage").at(-1);
   assert.match(modReply.payload.text, /нет привязанного аккаунта Gramsrv|no linked Gramsrv account/i);
+});
+
+test("admin TELEGRAM_ID operations accept an @telegram-username", async () => {
+  const { bot, calls, config, db, gramsrv } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 10, first_name: "Target", username: "durov", language_code: "ru" }, 10, "ru");
+  const target = await db.user(10);
+  target.server_user_id = 424242;
+  const mints = [];
+  gramsrv.mintUsername = async (userID) => { mints.push(userID); return {}; };
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grantusername" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "@durov Aaaa" }));
+  assert.deepEqual(mints, [424242, 424242], "the @username resolved to the linked gramsrv account");
+  const verifies = [];
+  gramsrv.setVerified = async (serverID) => { verifies.push(serverID); };
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:verified" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "@durov on" }));
+  assert.deepEqual(verifies, [424242, 424242], "moderation accepts @username as the Telegram target");
+});
+
+test("an occupied error on the real admin grant mint is surfaced to the moderator", async () => {
+  const { bot, calls, config, db, gramsrv } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 10, first_name: "Target", language_code: "ru" }, 10, "ru");
+  const target = await db.user(10);
+  target.server_user_id = 424242;
+  let realAttempts = 0;
+  gramsrv.mintUsername = async (_userID, _username, _bid, _key, dryRun) => {
+    if (!dryRun) {
+      realAttempts++;
+      const error = new Error("gramsrv /v1/collectible-usernames/mint 400: USERNAME_OCCUPIED: username occupied");
+      error.code = "USERNAME_OCCUPIED";
+      throw error;
+    }
+    return {};
+  };
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grantusername" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10 Ramble" }));
+  assert.equal(realAttempts, 1, "a race gang is caught on the real mint attempt");
+  const reply = calls.filter((call) => call.method === "sendMessage").at(-1);
+  assert.match(reply.payload.text, /уже занят другим пользователем|already occupied by another user/i);
+});
+
+test("an unmapped gramsrv failure keeps the visible reason in the reply", async () => {
+  const { bot, calls, config, db, gramsrv } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 10, first_name: "Target", language_code: "ru" }, 10, "ru");
+  const target = await db.user(10);
+  target.server_user_id = 424242;
+  gramsrv.mintUsername = async () => {
+    const error = new Error("gramsrv /v1/collectible-usernames/mint 400: COLLECTIBLE_PEER_LIMIT: peer limit reached");
+    error.code = "COLLECTIBLE_PEER_LIMIT";
+    throw error;
+  };
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grantusername" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10 Ramble" }));
+  const reply = calls.filter((call) => call.method === "sendMessage").at(-1);
+  assert.match(reply.payload.text, /peer limit/i, "the raw gramsrv reason stays visible instead of a generic crash");
+});
+
+test("admin audit button lists recent gramsrv actions", async () => {
+  const { bot, calls, db, config, gramsrv } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  gramsrv.adminCommands = async () => [
+    { command_id: "bot-x", actor: "777", action: "set_phone", target_user_id: 10, status: "completed", reason: "Admin number bind", created_at: new Date().toISOString(), error: "" },
+    { command_id: "bot-y", actor: "777", action: "mint_username", target_user_id: 10, status: "failed", reason: "", created_at: new Date().toISOString(), error: "USERNAME_OCCUPIED" },
+  ];
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:audit" }));
+  const sent = calls.filter((call) => call.method === "editMessageText").at(-1);
+  assert.match(sent.payload.text, /set_phone/);
+  assert.match(sent.payload.text, /mint_username/);
+  assert.match(sent.payload.text, /USERNAME_OCCUPIED/);
+});
+
+test("admin lookup shows recent sales and refunds for the user", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  db.adminLookupByTelegramID = async () => ({ user: { telegram_id: 10, username: "durov", language: "ru", bonus: 0, server_user_id: 424242 }, numbers: [] });
+  db.adminRecentActivity = async () => ({
+    sales: [{ title: "20 Stars", stars_price: 20, charge_id: "charge-a", created_at: 1710000000 }],
+    refunds: [{ title: "Premium — 1 month", stars_price: 30, charge_id: "charge-b", refunded_at: 1710001000 }],
+  });
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:lookup" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10" }));
+  const sent = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
+  assert.match(sent.payload.text, /🛒 <b>20 Stars<\/b> · 20 ⭐ · <code>charge-a<\/code>/);
+  assert.match(sent.payload.text, /↩️ <b>Premium — 1 month<\/b> · 30 ⭐ · <code>charge-b<\/code>/);
 });

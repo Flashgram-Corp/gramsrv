@@ -1290,3 +1290,7 @@ func (fakeService) AccountRatings(context.Context, domain.AccountRatingFilter) (
 func (fakeService) AccountRatingEvents(context.Context, int64, int) ([]domain.AccountRatingEvent, error) {
 	return nil, nil
 }
+
+func (fakeService) ListRecentAdminCommands(context.Context, int, string) ([]domain.AdminCommand, error) {
+	return nil, nil
+}

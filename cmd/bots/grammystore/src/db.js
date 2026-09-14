@@ -768,14 +768,38 @@ export class BotDatabase {
   }
 
   async adminLookupByUsername(username) {
-    const normalized = username.trim().replace(/^@/, "").toLowerCase();
-    if (!/^[a-z0-9_]{1,32}$/.test(normalized)) return null;
-    const res = await this.pool.query("SELECT * FROM users WHERE lower(username) = $1 LIMIT 1", [normalized]);
-    const user = res.rows[0] ?? null;
+    const user = await this.userByUsername(username);
     if (!user) return null;
     const numbers = await this.numbers(user.telegram_id);
     const verified = await this.verifiedPhone(user.telegram_id);
     return { user, numbers, verifiedPhone: verified };
+  }
+
+  async userByUsername(username) {
+    const normalized = String(username ?? "").trim().replace(/^@/, "").toLowerCase();
+    if (!/^[a-z0-9_]{1,32}$/.test(normalized)) return null;
+    const res = await this.pool.query("SELECT * FROM users WHERE lower(username) = $1 LIMIT 1", [normalized]);
+    return res.rows[0] ?? null;
+  }
+
+  // --- Admin recent activity (sales + refunds) ---
+
+  async adminRecentActivity(telegramID) {
+    if (!Number.isSafeInteger(Number(telegramID)) || Number(telegramID) <= 0) return { sales: [], refunds: [] };
+    const [sales, refunds] = await Promise.all([
+      this.pool.query(
+        `SELECT title, stars_price, charge_id, created_at FROM sales
+         WHERE buyer_id = $1 OR recipient_id = $1 ORDER BY id DESC LIMIT 10`,
+        [Number(telegramID)],
+      ),
+      this.pool.query(
+        `SELECT r.charge_id, r.refunded_at, r.updated_at, r.status, s.title, s.stars_price
+         FROM refunds r LEFT JOIN sales s ON s.charge_id = r.charge_id
+         WHERE r.telegram_id = $1 ORDER BY r.refunded_at DESC, r.charge_id DESC LIMIT 10`,
+        [Number(telegramID)],
+      ),
+    ]);
+    return { sales: sales.rows, refunds: refunds.rows };
   }
 }
 

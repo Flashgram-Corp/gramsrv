@@ -191,6 +191,7 @@ const (
 type CommandRepository interface {
 	BeginCommand(ctx context.Context, cmd domain.AdminCommand) (domain.AdminCommand, bool, error)
 	FinishCommand(ctx context.Context, commandID string, status domain.AdminCommandStatus, resultJSON []byte, errorText string) (domain.AdminCommand, error)
+	ListRecentCommands(ctx context.Context, limit int, actor string) ([]domain.AdminCommand, error)
 }
 
 type RestrictionStore interface {
@@ -4541,6 +4542,25 @@ func (s *Service) StarGiftCollectibleAnimation(ctx context.Context, giftID int64
 		return nil, false, domain.ErrStarGiftCollectibleInvalid
 	}
 	return s.gifts.CollectibleAnimationJSON(ctx, giftID, kind, attributeID)
+}
+
+func (s *Service) ListRecentAdminCommands(ctx context.Context, limit int, actor string) ([]domain.AdminCommand, error) {
+	if s == nil || s.commands == nil {
+		return nil, fmt.Errorf("admin command store is not configured")
+	}
+	repo, ok := s.commands.(interface {
+		ListRecentCommands(ctx context.Context, limit int, actor string) ([]domain.AdminCommand, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("admin command listing is not supported")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return repo.ListRecentCommands(ctx, limit, strings.TrimSpace(actor))
 }
 
 func (s *Service) runCommand(ctx context.Context, meta CommandMeta, action string, targetUserID int64, targetPeer domain.Peer, request any, fn func() (CommandResult, error)) (CommandResult, error) {

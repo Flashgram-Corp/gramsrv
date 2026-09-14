@@ -45,6 +45,22 @@ test("admin grant mints a zero-price username with a dry-run flag and a determin
   assert.equal(calls[1].payload.dry_run, false);
 });
 
+test("adminCommands lists the recent admin command journal with a limit and actor", async () => {
+  const client = new GramsrvClient({ gramsrvActor: "test" });
+  const calls = [];
+  client.get = async (route, params) => {
+    calls.push({ route, params });
+    return { commands: [{ command_id: "bot-abc", actor: "777", action: "set_phone", status: "completed" }] };
+  };
+  const commands = await client.adminCommands(30, "777");
+  assert.deepEqual(calls, [{ route: "/v1/admin-commands", params: { limit: 30, actor: "777" } }]);
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].command_id, "bot-abc");
+  assert.equal(commands[0].status, "completed");
+  const all = await client.adminCommands();
+  assert.deepEqual(calls.at(-1).params, { limit: 30, actor: "" }, "empty actor is omitted");
+});
+
 test("a paid purchase still bills the crypto amount like a sale", async () => {
   const client = new GramsrvClient({ gramsrvActor: "test", publicBaseURL: "https://example.com" });
   let payload;

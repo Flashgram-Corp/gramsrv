@@ -830,6 +830,74 @@ func (m *memoryCommandRepo) FinishCommand(_ context.Context, commandID string, s
 	return cmd, nil
 }
 
+func (m *memoryCommandRepo) ListRecentCommands(_ context.Context, limit int, actor string) ([]domain.AdminCommand, error) {
+	out := make([]domain.AdminCommand, 0, limit)
+	for _, cmd := range m.items {
+		if actor != "" && cmd.Actor != actor {
+			continue
+		}
+		out = append(out, cmd)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func TestServiceListRecentAdminCommands(t *testing.T) {
+	repo := newMemoryCommandRepo()
+	now := time.Now()
+	for i := 1; i <= 3; i++ {
+		actor := "777"
+		if i%2 == 0 {
+			actor = "888"
+		}
+		if _, _, err := repo.BeginCommand(context.Background(), domain.AdminCommand{
+			CommandID: fmt.Sprintf("cmd-%d", i), Actor: actor, Action: "set_username",
+			Status: domain.AdminCommandRunning, CreatedAt: now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("begin command: %v", err)
+		}
+	}
+	if _, err := repo.FinishCommand(context.Background(), "cmd-1", domain.AdminCommandCompleted, []byte("{}"), ""); err != nil {
+		t.Fatalf("finish command: %v", err)
+	}
+	svc := &Service{commands: repo, now: func() time.Time { return now }}
+	all, err := svc.ListRecentAdminCommands(context.Background(), 0, "")
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("got %d commands, want 3", len(all))
+	}
+	own, err := svc.ListRecentAdminCommands(context.Background(), 1, "777")
+	if err != nil {
+		t.Fatalf("list filtered: %v", err)
+	}
+	if len(own) != 1 {
+		t.Fatalf("got %d commands, want 1", len(own))
+	}
+	for _, cmd := range own {
+		if cmd.Actor != "777" {
+			t.Fatalf("got actor %q, want 777", cmd.Actor)
+		}
+	}
+	if stored := repo.items["cmd-1"]; stored.Status != domain.AdminCommandCompleted {
+		t.Fatalf("status %q, want completed", stored.Status)
+	}
+}
+
+func TestServiceListRecentAdminCommandsWithoutStore(t *testing.T) {
+	var nilService *Service
+	if _, err := nilService.ListRecentAdminCommands(context.Background(), 3, ""); err == nil {
+		t.Fatal("expected an error with a nil Service")
+	}
+	empty := &Service{}
+	if _, err := empty.ListRecentAdminCommands(context.Background(), 3, ""); err == nil {
+		t.Fatal("expected an error without a command store")
+	}
+}
+
 type fakeBotService struct {
 	token       string
 	createCalls int

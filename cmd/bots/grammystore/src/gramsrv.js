@@ -37,6 +37,28 @@ export class GramsrvClient {
     return text ? JSON.parse(text) : {};
   }
 
+  // Read-only administrator audit. Returns the newest admin command journal
+  // entries; actor filters to one administrator's own actions.
+  async get(route, params = {}) {
+    const url = new URL(`${this.config.gramsrvAPI}${route}`);
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
+    }
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { authorization: `Bearer ${this.config.gramsrvToken}` },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await response.text();
+    if (!response.ok) throw buildGramsrvError(route, response.status, text);
+    return text ? JSON.parse(text) : {};
+  }
+
+  async adminCommands(limit = 30, actor = "") {
+    const body = await this.get("/v1/admin-commands", { limit, actor });
+    return Array.isArray(body) ? body : body?.commands ?? [];
+  }
+
   command(reason, fields, idempotencyKey = "", actor = "") {
     const digest = idempotencyKey ? createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 40) : randomUUID();
     return { command_id: `bot-${digest}`, actor: actor || this.config.gramsrvActor, reason, dry_run: false, ...fields };
