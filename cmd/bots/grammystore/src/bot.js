@@ -492,11 +492,16 @@ export function createBot({ config, db, gramsrv }) {
       }
       number = await db.fulfillNumberPurchase({ product: product.code, title: view.title, starsPrice: product.starsPrice, recipientID, buyerID: buyer.id, buyerName: userName(buyer), chargeID, providerChargeID }, chatID, product.numberFormat);
       if (number && accountID > 0) {
-        try { await gramsrv.setPhone(accountID, number.phone, "Telegram bot number purchase", key); }
-        catch (error) {
-          console.error("Failed to set server phone for number purchase", accountID, error);
-          for (const owner of config.ownerIDs) {
-            await bot.api.sendMessage(owner, tr(owner, "fulfillmentOwnerError", { charge: escapeHTML(chargeID), error: escapeHTML(`setPhone ${accountID} -> ${number.phone}: ${error.message}`) }), { parse_mode: "HTML" }).catch(() => {});
+        for (const [name, step] of [
+          ["setPhone", () => gramsrv.setPhone(accountID, number.phone, "Telegram bot number purchase", key)],
+          ["mintPhone", () => gramsrv.mintPhone(accountID, number.phone, `${key}:phone`, false)],
+        ]) {
+          try { await step(); }
+          catch (error) {
+            console.error(`Failed to ${name} for number purchase`, accountID, error);
+            for (const owner of config.ownerIDs) {
+              await bot.api.sendMessage(owner, tr(owner, "fulfillmentOwnerError", { charge: escapeHTML(chargeID), error: escapeHTML(`${name} ${accountID} -> ${number.phone}: ${error.message}`) }), { parse_mode: "HTML" }).catch(() => {});
+            }
           }
         }
       } else if (number && account?.server_user_id > 0 && previous?.phone && accountID === 0) {
@@ -1087,6 +1092,14 @@ export function createBot({ config, db, gramsrv }) {
             console.error("Admin bind set-phone failed", targetID, error);
             return adminResult(tr(ctx.from.id, "bindPhonePartial", { phone: escapeHTML(number.display), id: targetID }));
           }
+          try {
+            const actor = String(ctx.from.id);
+            await gramsrv.mintPhone(user.server_user_id, number.phone, "", true, actor);
+            await gramsrv.mintPhone(user.server_user_id, number.phone, `admin:bindphone:mint:${targetID}:${number.phone}:${Date.now()}`, false, actor);
+          } catch (error) {
+            console.error("Admin bind mint-phone failed", targetID, error);
+            return adminResult(tr(ctx.from.id, "bindPhonePartial", { phone: escapeHTML(number.display), id: targetID }));
+          }
         }
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, "bindPhoneDone", { phone: escapeHTML(number.display), id: targetID }));
@@ -1103,7 +1116,7 @@ export function createBot({ config, db, gramsrv }) {
         // inside its own command, so a gang between the two calls cannot win.
         const actor = String(ctx.from.id);
         await gramsrv.mintUsername(serverUserID, username, 0, "", true, actor).catch((error) => {
-          if (/username occupied/i.test(String(error.message))) throw new Error("username occupied");
+          if (error.code === "USERNAME_OCCUPIED" || /username occupied/i.test(String(error.message))) throw new Error("username occupied");
           throw error;
         });
         await gramsrv.mintUsername(serverUserID, username, 0, `admin:grantusername:${targetID}:${username}:${Date.now()}`, false, actor);

@@ -1,5 +1,27 @@
 import { createHash, randomUUID } from "node:crypto";
 
+function buildGramsrvError(route, status, text) {
+  let errorText = text;
+  let code = "";
+  try {
+    const body = JSON.parse(text);
+    if (body && typeof body === "object") {
+      errorText = body.error || body.message || text;
+      if (body.code) {
+        code = String(body.code);
+      } else {
+        const match = /^([A-Z][A-Z0-9_]*): /.exec(String(errorText));
+        if (match) code = match[1];
+      }
+    }
+  } catch {
+    // non-JSON body; keep the raw text
+  }
+  const error = new Error(`gramsrv ${route} ${status}: ${errorText}`);
+  error.code = code;
+  return error;
+}
+
 export class GramsrvClient {
   constructor(config) { this.config = config; }
 
@@ -11,7 +33,7 @@ export class GramsrvClient {
       signal: AbortSignal.timeout(15_000),
     });
     const text = await response.text();
-    if (!response.ok) throw new Error(`gramsrv ${route} ${response.status}: ${text.slice(0, 500)}`);
+    if (!response.ok) throw buildGramsrvError(route, response.status, text);
     return text ? JSON.parse(text) : {};
   }
 
@@ -88,6 +110,21 @@ export class GramsrvClient {
     }, idempotencyKey, actor);
     if (dryRun) payload.dry_run = true;
     return this.post("/v1/collectible-usernames/mint", payload);
+  }
+  mintPhone(userID, phone, idempotencyKey = "", dryRun = false, actor = "") {
+    const payload = this.command("Telegram bot purchase", {
+      phone,
+      tier: "standard",
+      owner_user_id: String(userID),
+      currency: "USD",
+      amount: "100",
+      crypto_currency: "TON",
+      crypto_amount: "1000000000",
+      url: `${this.config.publicBaseURL}/nft/phone/${phone}`,
+      purchase_date: Math.floor(Date.now() / 1000),
+    }, idempotencyKey, actor);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/collectible-phones/mint", payload);
   }
   revokeUsername(username, expectedOwnerUserID, idempotencyKey = "", dryRun = false, actor = "") {
     const payload = this.command("Telegram bot refund", {

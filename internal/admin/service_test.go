@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -1926,6 +1927,21 @@ func TestMintCollectibleUsernameDryRunExecuteAndIdempotency(t *testing.T) {
 	}
 	if occupied.Status != string(domain.AdminCommandFailed) || usernames.mintCalls != 1 {
 		t.Fatalf("duplicate result=%+v mintCalls=%d, want a journalled failure without mutation", occupied, usernames.mintCalls)
+	}
+	if occupied.Code != CodeUsernameOccupied {
+		t.Fatalf("duplicate result code=%q, want the stable token %s", occupied.Code, CodeUsernameOccupied)
+	}
+}
+
+func TestErrorCodeExtractsStableToken(t *testing.T) {
+	if got := ErrorCode(codedError(CodeUsernameOccupied, domain.ErrUsernameOccupied)); got != CodeUsernameOccupied {
+		t.Fatalf("ErrorCode(codedError) = %q, want %s", got, CodeUsernameOccupied)
+	}
+	if got := ErrorCode(fmt.Errorf("%s: %w", CodeUsernameOccupied, domain.ErrUsernameOccupied)); got != "" {
+		t.Fatalf("ErrorCode(plain fmt.Errorf) = %q, want \"\": codes ride on codedError only", got)
+	}
+	if got := ErrorCode(nil); got != "" {
+		t.Fatalf("ErrorCode(nil) = %q, want \"\"", got)
 	}
 }
 

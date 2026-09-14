@@ -2171,7 +2171,7 @@ func writeCommandResult(w http.ResponseWriter, result admin.CommandResult, err e
 	if err != nil {
 		status = http.StatusBadRequest
 		if result.CommandID == "" {
-			result = admin.CommandResult{Status: "failed", Message: "command failed", Error: err.Error()}
+			result = admin.CommandResult{Status: "failed", Message: "command failed", Error: err.Error(), Code: admin.ErrorCode(err)}
 		}
 	}
 	writeJSON(w, status, result)

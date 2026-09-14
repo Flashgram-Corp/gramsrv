@@ -90,6 +90,14 @@ function mockDb() {
       numbers.set(id, num);
       return num;
     },
+    fulfillNumberPurchase: async ({ recipientID }, _chatID, numberFormat) => {
+      for (const number of [...numbers.values()]) if (number.owner_id === recipientID) numbers.delete(number.id);
+      const id = numberSeq++;
+      const phone = numberFormat === "short" ? "+88881234567" : numberFormat === "long" ? "+88809876543210" : "+79991234567";
+      const num = { id, phone, display: phone, format: numberFormat, country: "ANON", owner_id: recipientID, chat_id: recipientID, is_current: true, login_code: "", code_expires_at: 0, created_at: 0 };
+      numbers.set(id, num);
+      return num;
+    },
     setPending: async (id, kind, payload = {}) => { pendingState.set(id, { kind, payload }); },
     pending: async (id) => pendingState.get(id) ?? null,
     clearPending: async (id) => { pendingState.delete(id); },
@@ -454,10 +462,14 @@ test("admin binds a phone to any telegram account and updates the server account
   const user = await db.user(10);
   user.server_user_id = 424242;
   const setPhoneCalls = [];
+  const mintPhoneCalls = [];
   gramsrv.setPhone = async (serverID, phone, _reason, _key, _dryRun, _actor) => { setPhoneCalls.push({ serverID, phone }); };
+  gramsrv.mintPhone = async (serverID, phone, _key, dryRun, _actor) => { mintPhoneCalls.push({ serverID, phone, dryRun }); return {}; };
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:bindphone" }));
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10 +79991234567" }));
   assert.deepEqual(setPhoneCalls.at(-1), { serverID: 424242, phone: "+79991234567" }, "admin binding replaces the server account phone");
+  assert.equal(mintPhoneCalls.length, 2, "a dry-run registry check precedes the real collectible mint");
+  assert.deepEqual(mintPhoneCalls.at(-1), { serverID: 424242, phone: "+79991234567", dryRun: false }, "the bound number is minted as a collectible phone for the gramsrv account");
   const bound = await db.currentNumber(10);
   assert.equal(bound.phone, "+79991234567", "the bound phone becomes the user's only current number");
   const sent = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
@@ -583,6 +595,35 @@ test("a first +888 purchase is not discounted", async () => {
   assert.equal(invoice.payload.prices[0].amount, 25, "a free-number owner pays the full catalog price");
 });
 
+test("a resolved account purchase mints the +888 collectible phone and swaps the server phone", async () => {
+  const { bot, calls, db, gramsrv } = fixture();
+  await seedAccountUser(db, { serverUserID: 1780243207, hasNumber: true });
+  gramsrv.resolveUserByPhone = async (phone) => (phone === "+79990000001" ? 1780243207 : 0);
+  const setPhoneCalls = [], mintPhoneCalls = [];
+  gramsrv.setPhone = async (serverID, phone, reason, key) => { setPhoneCalls.push({ serverID, phone, reason, key }); };
+  gramsrv.mintPhone = async (serverID, phone, key, dryRun) => { mintPhoneCalls.push({ serverID, phone, key, dryRun }); return {}; };
+  await bot.handleUpdate({
+    update_id: Date.now(),
+    message: {
+      message_id: 7,
+      date: 1,
+      chat: { id: 10, type: "private" },
+      from: { id: 10, is_bot: false, first_name: "User", language_code: "ru" },
+      successful_payment: {
+        currency: "XTR",
+        total_amount: 25,
+        invoice_payload: buildPayload("num_long", 0),
+        telegram_payment_charge_id: "charge-purchase-1",
+        provider_payment_charge_id: "ppc-1",
+      },
+    },
+  });
+  assert.deepEqual(setPhoneCalls, [{ serverID: 1780243207, phone: "+88809876543210", reason: "Telegram bot number purchase", key: "payment:charge-purchase-1:num_long" }]);
+  assert.deepEqual(mintPhoneCalls, [{ serverID: 1780243207, phone: "+88809876543210", key: "payment:charge-purchase-1:num_long:phone", dryRun: false }], "the purchased number is minted as a collectible for the server account");
+  const recognized = calls.find((call) => call.method === "sendMessage" && /\+88809876543210/.test(call.payload.text));
+  assert.ok(recognized, "the buyer is shown the reserved number");
+});
+
 test("admin can set and see the daily free number limit in the prices panel", async () => {
   const { bot, calls, db, config } = fixture();
   config.ownerIDs.add(777);
@@ -670,7 +711,11 @@ test("admin grant refuses an occupied NFT username without minting", async () =>
   let called = 0;
   gramsrv.mintUsername = async (_userID, _username, _bid, _key, dryRun) => {
     called++;
-    if (dryRun) throw new Error("username occupied");
+    if (dryRun) {
+      const error = new Error("gramsrv /v1/collectible-usernames/mint 400: {\"status\":\"failed\"}");
+      error.code = "USERNAME_OCCUPIED";
+      throw error;
+    }
     return {};
   };
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grantusername" }));
