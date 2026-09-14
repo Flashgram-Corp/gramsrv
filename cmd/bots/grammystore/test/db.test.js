@@ -90,18 +90,95 @@ test("code access, support replies, refunds and pending wheel awards are durable
   await assert.rejects(() => db.reserveSpin(1, 100, 50));
 });
 
-test("refunding a paid number retires it and restores the previous free number", async () => {
+test("refunding a paid number retires it and restores a fresh free number", async () => {
   if (!db) return;
   await cleanTable("numbers"); await cleanTable("users");
   await db.upsertUser({ id: 5, first_name: "Buyer" }, 50, "ru");
   const free = await db.createNumber(5, 50, "free", "RU", false);
   const paid = await db.createNumber(5, 50, "short", "ANON", true);
-  assert.equal((await db.findNumber(free.phone)).id, free.id, "old free number remains owned");
+  assert.equal(await db.findNumber(free.phone), null, "old free number is released to the pool on purchase");
   assert.equal(await db.revokePurchasedNumber(5, paid.id, paid.phone, async () => 0), true);
   assert.equal(await db.revokePurchasedNumber(5, paid.id, paid.phone, async () => 0), false);
   const current = await db.currentNumber(5);
-  assert.equal(current.id, free.id);
+  assert.equal(current.format, "free", "refund restores a fresh free number");
+  assert.notEqual(current.id, paid.id);
   assert.equal(await db.findNumber(paid.phone), null);
+});
+
+test("purchasing a number releases prior free numbers and a refund restores a fresh free number", async () => {
+  if (!db) return;
+  await cleanTable("numbers"); await cleanTable("users"); await cleanTable("sales"); await cleanTable("processed_payments");
+  await db.upsertUser({ id: 7, first_name: "Buyer" }, 70, "ru");
+  const free = await db.createNumber(7, 70, "free", "RU", false);
+  const paid = await db.fulfillNumberPurchase({ product: "num_short", title: "N", starsPrice: 50, recipientID: 7, buyerID: 7, buyerName: "Buyer", chargeID: "owner-test" }, 70, "short");
+  assert.notEqual(paid.id, free.id);
+  assert.equal(await db.findNumber(free.phone), null, "old free number is released to the pool");
+  const owned = await db.numbers(7);
+  assert.equal(owned.length, 1, "only the purchased number remains in the menu");
+  assert.equal(owned[0].id, paid.id);
+  assert.equal(await db.revokePurchasedNumber(7, paid.id, paid.phone, async () => 0), true);
+  const current = await db.currentNumber(7);
+  assert.notEqual(current.id, paid.id);
+  assert.equal(current.format, "free", "refund restores a fresh free number");
+  assert.equal(await db.findNumber(paid.phone), null);
+});
+
+test("purchasing a +888 replaces a previously purchased +888 and retires it forever", async () => {
+  if (!db) return;
+  await cleanTable("numbers"); await cleanTable("users"); await cleanTable("sales"); await cleanTable("processed_payments");
+  await db.upsertUser({ id: 8, first_name: "Upgrader" }, 80, "ru");
+  const first = await db.fulfillNumberPurchase({ product: "num_short", title: "N", starsPrice: 50, recipientID: 8, buyerID: 8, buyerName: "Buyer", chargeID: "owner-first" }, 80, "short");
+  const second = await db.fulfillNumberPurchase({ product: "num_long", title: "N", starsPrice: 25, recipientID: 8, buyerID: 8, buyerName: "Buyer", chargeID: "owner-second" }, 80, "long");
+  assert.notEqual(second.id, first.id);
+  assert.equal((await db.currentNumber(8)).id, second.id, "the newest +888 is current");
+  const owned = await db.numbers(8);
+  assert.equal(owned.length, 1, "only the newest +888 remains active");
+  assert.equal((await db.pool.query("SELECT * FROM numbers WHERE id = $1", [first.id])).rows[0].retired, true, "the replaced +888 is retired, never recycled");
+});
+
+test("admin binding replaces every owned number and infers format and country", async () => {
+  if (!db) return;
+  await cleanTable("numbers"); await cleanTable("users");
+  await db.upsertUser({ id: 40, first_name: "Target" }, 400, "ru");
+  await db.createNumber(40, 400, "free", "RU", false);
+  await db.createNumber(40, 400, "short", "ANON", true);
+  const bound = await db.adminBindNumber(40, 400, "+79991234567");
+  assert.equal(bound.phone, "+79991234567");
+  assert.equal(bound.format, "free");
+  assert.equal(bound.country, "RU");
+  assert.equal(bound.is_current, true);
+  assert.equal((await db.currentNumber(40)).id, bound.id, "the bound phone becomes the only current number");
+  assert.equal((await db.numbers(40)).length, 1, "every previous number was removed");
+  const anon = await db.adminBindNumber(40, 400, "+8888123");
+  assert.equal(anon.format, "short");
+  assert.equal(anon.country, "ANON");
+  assert.equal((await db.numbers(40)).length, 1, "the +888 replaced the free number");
+  assert.equal(await db.findNumber(bound.phone), null, "the old free returned to the pool");
+  const display = (await db.adminBindNumber(40, 400, "+19995550123")).display;
+  assert.equal(display, "+1 (999) 555-0123", "admin real numbers get the same display formatting");
+});
+
+test("admin binding refuses a phone already allocated to another owner", async () => {
+  if (!db) return;
+  await cleanTable("numbers"); await cleanTable("users");
+  await db.upsertUser({ id: 41, first_name: "A" }, 410, "ru");
+  await db.upsertUser({ id: 42, first_name: "B" }, 420, "ru");
+  await db.adminBindNumber(41, 410, "+79990000001");
+  await assert.rejects(() => db.adminBindNumber(42, 420, "+79990000001"), /already allocated/);
+});
+
+test("number discount percent setting is clamped to a sane range", async () => {
+  if (!db) return;
+  await cleanTable("settings");
+  assert.equal(await db.numberDiscountPercent(), 0);
+  await db.setSetting("number_discount_percent", "20");
+  assert.equal(await db.numberDiscountPercent(), 20);
+  await db.setSetting("number_discount_percent", "150");
+  assert.equal(await db.numberDiscountPercent(), 100);
+  await db.setSetting("number_discount_percent", "-5");
+  assert.equal(await db.numberDiscountPercent(), 0);
+  await db.setSetting("number_discount_percent", "abc");
+  assert.equal(await db.numberDiscountPercent(), 0);
 });
 
 test("language and notification preferences persist and broadcasts honor them", async () => {
@@ -134,7 +211,7 @@ test("administrator mutations reject invalid input and missing users", async () 
   await assert.rejects(() => db.addBonus(999, 10));
 });
 
-test("issuing a new number preserves the old OTP route until the client changes phone", async () => {
+test("re-rolling a free number replaces the previous one so exactly one remains", async () => {
   if (!db) return;
   await cleanTable("numbers"); await cleanTable("users");
   await db.upsertUser({ id: 10, first_name: "Multi" }, 100, "ru");
@@ -144,12 +221,9 @@ test("issuing a new number preserves the old OTP route until the client changes 
   assert.equal(second.is_current, true);
   assert.notEqual(first.id, second.id);
   const all = await db.numbers(10);
-  assert.equal(all.length, 2, "old number remains reserved");
+  assert.equal(all.length, 1, "exactly one number remains after a re-roll");
   assert.equal(all[0].id, second.id);
-  assert.equal((await db.findNumber(first.phone)).id, first.id);
-  const delivery = await db.updateLoginCode(first.phone, "00000");
-  assert.equal(delivery.number.id, first.id);
-  assert.deepEqual(delivery.chatIDs, [100]);
+  assert.equal(await db.findNumber(first.phone), null, "the previous number was released to the pool");
 });
 
 test("a purchased number blocks obtaining a free number afterwards", async () => {
@@ -164,6 +238,41 @@ test("a purchased number blocks obtaining a free number afterwards", async () =>
   assert.equal(current.is_current, true);
   const freeNumbers = await db.pool.query("SELECT * FROM numbers WHERE owner_id = 11 AND format = 'free'");
   assert.equal(freeNumbers.rowCount, 0);
+});
+
+test("retention detects owners of more than one number and cleanup keeps the current one", async () => {
+  if (!db) return;
+  await cleanTable("numbers"); await cleanTable("users");
+  await db.upsertUser({ id: 12, first_name: "OnlyFree" }, 120, "ru");
+  await db.upsertUser({ id: 13, first_name: "OnlyPaid" }, 130, "ru");
+  await db.upsertUser({ id: 14, first_name: "Both" }, 140, "ru");
+  await db.upsertUser({ id: 15, first_name: "RetiredPaid" }, 150, "ru");
+  const insert = (phone, format, ownerID, chatID, isCurrent) => db.pool.query(
+    "INSERT INTO numbers(phone, display, format, country, owner_id, chat_id, is_current, retired) VALUES($1, $1, $2, $3, $4, $5, $6, FALSE) RETURNING *",
+    [phone, format, format === "free" ? "RU" : "ANON", ownerID, chatID, isCurrent]
+  ).then((res) => res.rows[0]);
+  const free12 = await insert("+88880000012", "free", 12, 120, true);
+  await insert("+88880900013", "short", 13, 130, true);
+  const free14 = await insert("+88880000014", "free", 14, 140, false);
+  const paid14 = await insert("+88880900014", "short", 14, 140, true);
+  await insert("+88880000015", "free", 15, 150, true);
+  const paid15 = await insert("+88880900015", "short", 15, 150, false);
+  await db.pool.query("UPDATE numbers SET retired = TRUE, is_current = FALSE WHERE id = $1", [paid15.id]);
+  assert.deepEqual(await db.duplicateNumberOwners(), [14], "only owners with real duplicates are reported");
+  const cleaned = await db.cleanupDuplicateNumbers(14, paid14.id);
+  assert.equal(cleaned.removed, 1);
+  assert.equal(cleaned.retired, 0);
+  assert.equal(cleaned.keptPhone, paid14.phone);
+  const owned14 = await db.numbers(14);
+  assert.equal(owned14.length, 1, "exactly one number stays");
+  assert.equal(owned14[0].id, paid14.id, "the retained number survives");
+  assert.equal(owned14[0].is_current, true);
+  assert.equal(await db.findNumber(free14.phone), null, "the free number is released to the pool");
+  assert.equal((await db.findNumber(paid14.phone)).id, paid14.id);
+  assert.equal((await db.cleanupDuplicateNumbers(15, (await db.currentNumber(15)).id)).removed, 0, "a free under a retired +888 is left alone");
+  assert.equal((await db.cleanupDuplicateNumbers(12, (await db.currentNumber(12)).id)).removed, 0, "a free-only owner is left alone");
+  assert.equal((await db.cleanupDuplicateNumbers(13, (await db.currentNumber(13)).id)).removed, 0, "a +888-only owner is left alone");
+  assert.equal((await db.findNumber(free12.phone)).id, free12.id);
 });
 
 test("verified phone binding and lookup", async () => {

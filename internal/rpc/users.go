@@ -425,7 +425,7 @@ func (r *Router) buildUserFullProjection(ctx context.Context, currentUserID int6
 	}
 	// star gift 数量：客户端把资料页 Gifts 区段/标签页门控在 stargifts_count>0
 	//（DrKLO ProfileActivity:10497 / TDesktop data_user.cpp:924），不下发则收到的礼物
-	// 不在资料页展示。计持有的全部活跃礼物（含隐藏）；隐藏只影响他人看到的列表。
+	// 不在资料页展示。计展示在资料的礼物数（非转换、非隐藏）。
 	if r.deps.Gifts != nil {
 		if n, err := r.deps.Gifts.CountSaved(ctx, domain.Peer{Type: domain.PeerTypeUser, ID: u.ID}); err == nil && n > 0 {
 			full.SetStargiftsCount(n)

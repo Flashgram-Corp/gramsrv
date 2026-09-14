@@ -13,7 +13,7 @@ test("legacy Stars sale resolves the exact granted amount from its title", () =>
 
 test("Stars reversal debits the snapshotted grant with a deterministic key", async () => {
   const calls = [];
-  const db = { starsRate: async () => 999 };
+  const db = { starsRate: async () => 999, productPrices: async () => ({}) };
   const gramsrv = { debitStars: async (...args) => calls.push(args) };
   const sale = { charge_id: "charge-1", fulfillment: { kind: "stars", recipientID: 1001, amount: 20 } };
   await reverseSaleFulfillment(sale, db, gramsrv);
@@ -22,7 +22,7 @@ test("Stars reversal debits the snapshotted grant with a deterministic key", asy
 
 test("Premium reversal only revokes the entitlement created by the purchase", async () => {
   const calls = [];
-  const db = { starsRate: async () => 20 };
+  const db = { starsRate: async () => 20, productPrices: async () => ({}) };
   const gramsrv = { revokePremium: async (...args) => calls.push(args) };
   const sale = { charge_id: "charge-premium", fulfillment: { kind: "premium", recipientID: 1001, months: 3, entitlementID: 77 } };
   await reverseSaleFulfillment(sale, db, gramsrv);
@@ -31,14 +31,15 @@ test("Premium reversal only revokes the entitlement created by the purchase", as
 
 test("legacy Premium reversal fails safe instead of clearing unrelated Premium", async () => {
   const sale = { charge_id: "legacy", product: "premium_1m", recipient_id: 1001, fulfillment: {} };
-  await assert.rejects(() => reverseSaleFulfillment(sale, { starsRate: async () => 20 }, {}), /ID/);
+  await assert.rejects(() => reverseSaleFulfillment(sale, { starsRate: async () => 20, productPrices: async () => ({}) }, {}), /ID/);
 });
 
 function mockDb() {
   const sales = new Map();
   const refunds = new Map();
   return {
-    starsRate: async () => 20,
+starsRate: async () => 20,
+    productPrices: async () => ({}),
     addSale: async (sale) => { sales.set(sale.chargeID, { ...sale, payment_status: "done" }); },
     saleByCharge: async (id) => {
       const s = sales.get(id);
@@ -75,4 +76,20 @@ test("Telegram retry does not debit the internal product twice", async () => {
   await executeCompensatedRefund({ sale, telegramID: 7, db, gramsrv, refundStarPayment: async () => true });
   assert.equal(debits.length, 1);
   assert.equal(await db.isRefunded("charge-retry"), true);
+});
+
+test("refunding a stuck payment that never produced a sale only returns the Stars", async () => {
+  const calls = [];
+  const db = {
+    starsRate: async () => 20,
+    productPrices: async () => ({}),
+    beginRefund: async (chargeID) => ({ charge_id: chargeID, status: "reversing", internal_reversed: false }),
+    markRefundInternal: async (chargeID) => calls.push(["markRefundInternal", chargeID]),
+    markRefunded: async (chargeID) => calls.push(["markRefunded", chargeID]),
+    failRefund: async (chargeID) => calls.push(["failRefund", chargeID]),
+  };
+  const gramsrv = { debitStars: async () => { throw new Error("must not reverse goods that were never delivered"); } };
+  const synthetic = { charge_id: "stuck-payment", buyer_id: 1001, fulfillment: { kind: "custom" } };
+  await executeCompensatedRefund({ sale: synthetic, telegramID: 1001, db, gramsrv, refundStarPayment: async (uid, cid) => calls.push(["refundXTR", uid, cid]) });
+  assert.deepEqual(calls, [["markRefundInternal", "stuck-payment"], ["refundXTR", 1001, "stuck-payment"], ["markRefunded", "stuck-payment"]]);
 });

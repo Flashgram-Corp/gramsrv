@@ -2,7 +2,7 @@ import http from "node:http";
 import { loadConfig } from "./config.js";
 import { BotDatabase } from "./db.js";
 import { GramsrvClient } from "./gramsrv.js";
-import { commandList, createBot } from "./bot.js";
+import { commandList, createBot, runNumberRetention } from "./bot.js";
 import { normalizeLanguage, translate } from "./i18n.js";
 import { parseTelesrvDelivery, verifyTelesrvSignature } from "./otp.js";
 import { isRealMode } from "./real-number.js";
@@ -15,6 +15,14 @@ const db = new BotDatabase(config.dbUrl);
 await db.pool.query("SELECT retired FROM numbers LIMIT 0");
 const gramsrv = new GramsrvClient(config);
 const bot = createBot({ config, db, gramsrv });
+
+// Number retention: keeps the "no user may hold more than one active number"
+// invariant by releasing stale free numbers from owners of a purchased +888
+// number (rebinding signed-up accounts first). Sweep on boot, then periodically.
+const numberRetentionMsecs = 5 * 60 * 1000;
+const retentionTimer = setInterval(() => runNumberRetention({ db, gramsrv }).catch((error) => console.error("Number retention sweep failed", error)), numberRetentionMsecs);
+retentionTimer.unref?.();
+void runNumberRetention({ db, gramsrv }).catch((error) => console.error("Number retention sweep failed", error));
 
 function escapeHTML(value) { return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"); }
 function json(response, status, body) { response.writeHead(status, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify(body)); }
