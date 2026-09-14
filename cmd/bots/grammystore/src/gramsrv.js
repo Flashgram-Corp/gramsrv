@@ -48,18 +48,20 @@ export class GramsrvClient {
     return this.post("/v1/accounts/grant-premium", this.command(reason, { user_id: userID, months: 0, entitlement_id: entitlementID }, idempotencyKey));
   }
 
-  mintUsername(userID, username, bidTON, idempotencyKey = "") {
-    const amount = (BigInt(bidTON) * 1_000_000_000n).toString();
-    return this.post("/v1/collectible-usernames/mint", this.command("Telegram bot purchase", {
+  mintUsername(userID, username, bidTON, idempotencyKey = "", dryRun = false) {
+    const amount = bidTON > 0 ? (BigInt(bidTON) * 1_000_000_000n).toString() : "0";
+    const payload = this.command("Telegram bot purchase", {
       username,
       owner_user_id: String(userID),
       currency: "TON",
       amount,
-      crypto_currency: "TON",
-      crypto_amount: amount,
+      crypto_currency: bidTON > 0 ? "TON" : "",
+      crypto_amount: bidTON > 0 ? amount : "0",
       url: `${this.config.publicBaseURL}/nft/username/${username}`,
       purchase_date: Math.floor(Date.now() / 1000),
-    }, idempotencyKey));
+    }, idempotencyKey);
+    if (dryRun) payload.dry_run = true;
+    return this.post("/v1/collectible-usernames/mint", payload);
   }
   revokeUsername(username, expectedOwnerUserID, idempotencyKey = "") {
     return this.post("/v1/collectible-usernames/revoke", this.command("Telegram bot refund", {

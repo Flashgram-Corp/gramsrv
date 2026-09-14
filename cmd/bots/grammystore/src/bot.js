@@ -143,7 +143,6 @@ export function shopKeyboard(language) {
   return new InlineKeyboard()
     .text(translate(language, "buttonPremium"), "shop:premium").text(translate(language, "buttonStars"), "shop:stars").row()
     .text(translate(language, "buttonNumber"), "shop:number").text(translate(language, "buttonUsername"), "shop:username").row()
-    .text(translate(language, "buyCustomNumberButton"), "shop:number").row()
     .text(translate(language, "back"), "menu:home");
 }
 
@@ -177,8 +176,8 @@ export function adminKeyboard(language) {
     .text(translate(language, "adminBonusButton"), "admin:bonus").text(translate(language, "adminInvoiceButton"), "admin:invoice").row()
     .text(translate(language, "adminAccessButton"), "admin:access").text(translate(language, "adminRefundButton"), "admin:refund").row()
     .text(translate(language, "adminReplyButton"), "admin:reply").text(translate(language, "adminPricesButton"), "admin:prices").row()
-    .text(translate(language, "adminBindPhoneButton"), "admin:bindphone").text(translate(language, "adminSalesButton"), "admin:sales").row()
-    .text(translate(language, "back"), "menu:home");
+    .text(translate(language, "adminBindPhoneButton"), "admin:bindphone").text(translate(language, "adminGrantUsernameButton"), "admin:grantusername").row()
+    .text(translate(language, "adminSalesButton"), "admin:sales").text(translate(language, "back"), "menu:home");
 }
 
 export function commandList(language) {
@@ -633,10 +632,14 @@ export function createBot({ config, db, gramsrv }) {
     const language = languageOf(ctx.from.id);
     let note = "";
     if (product.kind === KINDS.number) {
+      const current = await db.currentNumber(ctx.from.id);
+      const repeat = current && current.format !== "free";
       const effective = await effectiveProduct(ctx.from.id, product);
-      if (effective.starsPrice !== product.starsPrice) {
-        product = effective;
-        note = `\n${tr(ctx.from.id, "numberRepeatDiscount", { percent: await db.numberDiscountPercent() })}`;
+      const discounted = effective.starsPrice !== product.starsPrice;
+      if (discounted) product = effective;
+      if (repeat) {
+        note = `\n${tr(ctx.from.id, "numberRepeatWarning")}`;
+        if (discounted) note += `\n${tr(ctx.from.id, "numberRepeatDiscount", { percent: await db.numberDiscountPercent() })}`;
       }
     }
     const view = localizeProduct(product, language);
@@ -855,7 +858,7 @@ export function createBot({ config, db, gramsrv }) {
     const promptKeys = {
       broadcast: "adminPromptBroadcast", stars: "adminPromptStars", premium: "adminPromptPremium", promo: "adminPromptPromo",
       giveaway: "adminPromptGiveaway", bonus: "adminPromptBonus", invoice: "adminPromptInvoice", access: "adminPromptAccess",
-      refund: "adminPromptRefund", reply: "adminPromptReply", bindphone: "adminPromptBindPhone",
+      refund: "adminPromptRefund", reply: "adminPromptReply", bindphone: "adminPromptBindPhone", grantusername: "adminPromptGrantUsername",
     };
     if (promptKeys[action]) {
       await db.setPending(ctx.from.id, `admin_${action}`, { operationID: `admin:${ctx.from.id}:${Date.now()}:${randomInt(1_000_000)}` });
@@ -1058,6 +1061,24 @@ export function createBot({ config, db, gramsrv }) {
         }
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, "bindPhoneDone", { phone: escapeHTML(number.display), id: targetID }));
+      }
+      if (pending.kind === "admin_grantusername") {
+        const [idRaw, ...words] = input.split(/\s+/);
+        const targetID = Number(idRaw);
+        const username = normalizeUsername(words.join(""));
+        if (!Number.isSafeInteger(targetID) || targetID <= 0 || !username) throw new Error("invalid Telegram ID or username");
+        const user = await db.user(targetID);
+        if (!user) return adminResult(tr(ctx.from.id, "userNotFound"));
+        // A server-side dry run is the authoritative occupation check before a
+        // zero-price grant (blind even for vault names). The real mint rechecks
+        // inside its own command, so a gang between the two calls cannot win.
+        await gramsrv.mintUsername(targetID, username, 0, "", true).catch((error) => {
+          if (/username occupied/i.test(String(error.message))) throw new Error("username occupied");
+          throw error;
+        });
+        await gramsrv.mintUsername(targetID, username, 0, `admin:grantusername:${targetID}:${username}:${Date.now()}`);
+        await db.clearPending(ctx.from.id);
+        return adminResult(tr(ctx.from.id, "grantUsernameDone", { username: escapeHTML(username), id: targetID }));
       }
       if (pending.kind === "admin_refund") {
         const parts = input.split(/\s+/);

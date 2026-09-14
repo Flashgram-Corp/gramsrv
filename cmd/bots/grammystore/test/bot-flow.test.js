@@ -524,13 +524,14 @@ test("manual account ID is accepted when it matches the resolved phone", async (
   assert.equal((await db.user(10)).server_user_id, 17);
 });
 
-test("shop replaces the sell flow with a buy-custom-number entry into the +888 section", async () => {
+test("shop keeps a single +888 entry and no sell flow", async () => {
   const { bot, calls, db } = fixture();
   await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
   await bot.handleUpdate(accountCallbackUpdate({ data: "menu:shop" }));
   const edit = calls.find((call) => call.method === "editMessageText");
   const labels = edit.payload.reply_markup.inline_keyboard.flat().map((button) => button.text).join("\n");
-  assert.match(labels, /Купить новый номер|Buy a new number/);
+  assert.match(labels, /📱 \+888/);
+  assert.doesNotMatch(labels, /Купить новый номер|Buy a new number/, "the +888 entry is not duplicated in the store");
   assert.doesNotMatch(labels, /Продать|Sell/);
   await bot.handleUpdate(accountCallbackUpdate({ data: "shop:number" }));
   const products = calls.filter((call) => call.method === "editMessageText").at(-1);
@@ -610,4 +611,65 @@ test("users at the daily free limit get a notice instead of the country menu", a
   await bot.handleUpdate(accountCallbackUpdate({ data: "numbers:new" }));
   const menu = calls.filter((call) => call.method === "editMessageText").at(-1);
   assert.match(menu.payload.text, /Выберите страну|Choose a country/);
+});
+
+test("repeat +888 buyers see a warning that their old number will be replaced", async () => {
+  const { bot, calls, db } = fixture();
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await db.createNumber(10, 10, "short", "ANON", true);
+  await bot.handleUpdate(accountCallbackUpdate({ data: "product:num_short" }));
+  const edit = calls.filter((call) => call.method === "editMessageText").at(-1);
+  assert.match(edit.payload.text, /Ваш текущий \+888 будет удалён|Your current \+888 will be deleted/i);
+});
+
+test("first-time +888 buyers are not warned about replacing a number", async () => {
+  const { bot, calls, db } = fixture();
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await db.createNumber(10, 10, "free", "RU", false);
+  await bot.handleUpdate(accountCallbackUpdate({ data: "product:num_short" }));
+  const edit = calls.filter((call) => call.method === "editMessageText").at(-1);
+  assert.doesNotMatch(edit.payload.text, /Ваш текущий \+888 будет удалён|Your current \+888 will be deleted/i);
+});
+
+test("admin can grant an NFT username next to the bind phone button", async () => {
+  const { bot, calls, config, db, gramsrv } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 10, first_name: "Target", language_code: "ru" }, 10, "ru");
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:menu" }));
+  const edit = calls.find((call) => call.method === "editMessageText");
+  const rows = edit.payload.reply_markup.inline_keyboard.map((row) => row.map((button) => button.text).join("\u0001"));
+  assert.ok(rows.some((row) => row.includes("📞 Привязать номер\u0001🎨 Выдать NFT username")), "bind phone sits right next to grant NFT username on the same row");
+  const mints = [];
+  gramsrv.mintUsername = async (userID, username, bid, key, dryRun) => { mints.push({ userID, username, bid, dryRun }); return {}; };
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grantusername" }));
+  const prompt = calls.filter((call) => call.method === "editMessageText").at(-1);
+  assert.match(prompt.payload.text, /TELEGRAM_ID USERNAME|Формат:/);
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10 Durov" }));
+  assert.equal(mints.length, 2, "a dry-run occupation check precedes the real zero-price mint");
+  assert.equal(mints[0].dryRun, true);
+  assert.ok(!mints[1].dryRun, "the real mint runs without the dry-run flag");
+  assert.equal(mints[0].userID, 10);
+  assert.equal(mints[0].bid, 0);
+  assert.equal(mints[0].username, "durov");
+  const done = calls.filter((call) => call.method === "sendMessage").find((call) => /durov/.test(call.payload.text) && /выдан|granted to/i.test(call.payload.text));
+  assert.ok(done, "the admin sees the grant confirmation");
+});
+
+test("admin grant refuses an occupied NFT username without minting", async () => {
+  const { bot, calls, config, db, gramsrv } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.upsertUser({ id: 10, first_name: "Target", language_code: "ru" }, 10, "ru");
+  let called = 0;
+  gramsrv.mintUsername = async (_userID, _username, _bid, _key, dryRun) => {
+    called++;
+    if (dryRun) throw new Error("username occupied");
+    return {};
+  };
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:grantusername" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "10 @Durov" }));
+  assert.equal(called, 1, "the real mint is skipped when the dry run reports occupation");
+  const reply = calls.filter((call) => call.method === "sendMessage").at(-1);
+  assert.match(reply.payload.text, /уже занят другим пользователем|already occupied by another user/i);
 });
