@@ -144,6 +144,9 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if before.Gift.AvailabilityRemains != 0 || !before.Gift.SoldOut {
+			t.Fatalf("exhausted limited edition did not flip sold_out: limited=%v sold_out=%v remains=%d", before.Gift.Limited, before.Gift.SoldOut, before.Gift.AvailabilityRemains)
+		}
 		importGift("limited-revision", id, 2, true)
 		after, err := catalogEntryByID(ctx, pool, id)
 		if err != nil {

@@ -280,10 +280,16 @@ WHERE NOT $3 OR star_gift_user_purchases.purchased_count<$4 RETURNING purchased_
 		return domain.StarGift{}, domain.SavedStarGift{}, domain.StarsBalance{}, err
 	}
 	if gift.Limited {
-		if tag, err := tx.Exec(ctx, `UPDATE star_gift_catalog SET availability_remains=availability_remains-1,
+		var remains int
+		if err := tx.QueryRow(ctx, `UPDATE star_gift_catalog SET availability_remains=availability_remains-1,
 first_sale_date=CASE WHEN first_sale_date=0 THEN $2 ELSE first_sale_date END,last_sale_date=$2,updated_at=now()
-WHERE gift_id=$1 AND availability_remains>0`, gift.ID, req.Date); err != nil || tag.RowsAffected() != 1 {
+WHERE gift_id=$1 AND availability_remains>0 RETURNING availability_remains`, gift.ID, req.Date).Scan(&remains); err != nil {
 			return domain.StarGift{}, domain.SavedStarGift{}, domain.StarsBalance{}, domain.ErrStarGiftUnavailable
+		}
+		if remains == 0 {
+			if err := s.markCatalogSoldOutTx(ctx, tx, gift.ID); err != nil {
+				return domain.StarGift{}, domain.SavedStarGift{}, domain.StarsBalance{}, err
+			}
 		}
 	} else if _, err := tx.Exec(ctx, `UPDATE star_gift_catalog SET first_sale_date=CASE WHEN first_sale_date=0 THEN $2 ELSE first_sale_date END,
 last_sale_date=$2,updated_at=now() WHERE gift_id=$1`, gift.ID, req.Date); err != nil {
@@ -303,6 +309,18 @@ last_sale_date=$2,updated_at=now() WHERE gift_id=$1`, gift.ID, req.Date); err !=
 	return gift, saved, balance, nil
 }
 
+// markCatalogSoldOutTx flips sold_out=true on the active revision once a
+// limited gift's inventory is exhausted. sold_out, first_sale_date and
+// last_sale_date share the TL flag, and the RPC projection only exposes the
+// sale timestamps behind the sold-out flag, so the revision must reflect an
+// exhausted limited gift for clients to render its first/last sale dates.
+func (s *StarGiftLifecycleStore) markCatalogSoldOutTx(ctx context.Context, tx pgx.Tx, giftID int64) error {
+	_, err := tx.Exec(ctx, `UPDATE star_gift_catalog_revisions r SET sold_out=true
+FROM star_gift_catalog c
+WHERE c.gift_id=$1 AND c.active_revision_id=r.id AND r.limited AND NOT r.sold_out`, giftID)
+	return err
+}
+
 func (s *StarGiftLifecycleStore) insertStarGiftPurchaseCommand(ctx context.Context, tx pgx.Tx, req domain.StarGiftPurchaseRequest, savedID, charge, balance int64) error {
 	_, err := tx.Exec(ctx, `INSERT INTO star_gift_purchase_commands(buyer_user_id,command_key,gift_id,recipient_peer_type,
 recipient_peer_id,saved_gift_id,form_id,charge_stars,balance_after,created_at)
@@ -310,8 +328,7 @@ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, req.BuyerUserID, req.CommandKey, req.Gi
 		savedID, req.FormID, charge, balance, req.Date)
 	return err
 }
-
-func (s *StarGiftLifecycleStore) loadStarGiftPurchaseReplay(ctx context.Context, req domain.StarGiftPurchaseRequest, sent domain.SendPrivateTextResult) (domain.StarGiftPurchaseResult, bool, error) {
+	func (s *StarGiftLifecycleStore) loadStarGiftPurchaseReplay(ctx context.Context, req domain.StarGiftPurchaseRequest, sent domain.SendPrivateTextResult) (domain.StarGiftPurchaseResult, bool, error) {
 	var giftID, recipientID, savedID, formID, charge, balance int64
 	var recipientType string
 	err := s.db.QueryRow(ctx, `SELECT gift_id,recipient_peer_type,recipient_peer_id,saved_gift_id,form_id,charge_stars,balance_after
