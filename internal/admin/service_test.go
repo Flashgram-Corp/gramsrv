@@ -1424,6 +1424,50 @@ func TestImportStarGiftReleasedByRejectsUnknownUsername(t *testing.T) {
 	}
 }
 
+func TestImportStarGiftPerUserTotalSetsLimitedPerUser(t *testing.T) {
+	gifts := &fakeGiftsService{}
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, Now: fixedNow})
+	base := ImportStarGiftRequest{
+		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3,
+		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
+		PerUserTotal: 5,
+	}
+	base.CommandMeta = CommandMeta{CommandID: "pu-5", Actor: "ops", Reason: "catalog", DryRun: false}
+	result, err := svc.ImportStarGift(context.Background(), base)
+	if err != nil || gifts.createCalls != 1 {
+		t.Fatalf("result=%+v err=%v create=%d", result, err, gifts.createCalls)
+	}
+	if !gifts.lastWrite.LimitedPerUser || gifts.lastWrite.PerUserTotal != 5 {
+		t.Fatalf("LimitedPerUser=%v PerUserTotal=%d, want true/5", gifts.lastWrite.LimitedPerUser, gifts.lastWrite.PerUserTotal)
+	}
+	if result.Details["limited_per_user"] == nil || result.Details["per_user_total"] != 5 {
+		t.Fatalf("details missing per_user_total: %+v", result.Details)
+	}
+
+	gifts.createCalls = 0
+	base.CommandMeta = CommandMeta{CommandID: "pu-0", Actor: "ops", Reason: "catalog", DryRun: false}
+	base.PerUserTotal = 0
+	if _, err := svc.ImportStarGift(context.Background(), base); err != nil {
+		t.Fatalf("zero per_user_total err=%v", err)
+	}
+	if gifts.lastWrite.LimitedPerUser || gifts.lastWrite.PerUserTotal != 0 {
+		t.Fatalf("zero: LimitedPerUser=%v PerUserTotal=%d, want false/0", gifts.lastWrite.LimitedPerUser, gifts.lastWrite.PerUserTotal)
+	}
+}
+
+func TestImportStarGiftPerUserTotalRejectsNegative(t *testing.T) {
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: &fakeGiftsService{}, Now: fixedNow})
+	req := ImportStarGiftRequest{
+		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3,
+		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
+		PerUserTotal: -1,
+	}
+	req.CommandMeta = CommandMeta{CommandID: "pu-neg", Actor: "ops", Reason: "catalog", DryRun: false}
+	if _, err := svc.ImportStarGift(context.Background(), req); err == nil {
+		t.Fatal("negative per_user_total should be rejected")
+	}
+}
+
 func TestPublishStarGiftCollectiblesDryRunThenConfirm(t *testing.T) {
 	gifts := &fakeGiftsService{}
 	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, Now: fixedNow})

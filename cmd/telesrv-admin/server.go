@@ -2083,6 +2083,7 @@ type importStarGiftAPIRequest struct {
 	SortOrder     int    `json:"sort_order"`
 	SupportOnly   bool   `json:"support_only,omitempty"`
 	ReleasedBy    string `json:"released_by_peer"`
+	PerUserTotal  int    `json:"per_user_total"`
 
 	// Optional lifecycle authoring for the auction panel and the scheduled
 	// release ("отложенный дроп"). Zero values describe an ordinary gift; the
@@ -2137,6 +2138,7 @@ func (s *server) handleImportStarGiftAPI(w http.ResponseWriter, r *http.Request)
 		SupportOnly:  body.SupportOnly,
 		SortOrder:    body.SortOrder,
 		ReleasedBy:   body.ReleasedBy,
+			PerUserTotal: body.PerUserTotal,
 		FileName:     header.Filename,
 
 		Auction:              body.Auction,
@@ -2172,6 +2174,7 @@ type importOfficialStarGiftAPIRequest struct {
 	SupplyTotal        int    `json:"supply_total"`
 	SlugPrefix         string `json:"slug_prefix"`
 	ReleasedBy         string `json:"released_by_peer"`
+	PerUserTotal       int    `json:"per_user_total"`
 	// Unix seconds at which the imported gift becomes purchasable. Zero keeps the
 	// snapshot's own release time.
 	LockedUntilDate int `json:"locked_until_date"`
@@ -2195,6 +2198,7 @@ func (s *server) handleImportOfficialStarGiftAPI(w http.ResponseWriter, r *http.
 		IncludeCollectible: body.IncludeCollectible, UpgradeStars: body.UpgradeStars,
 		SupplyTotal: body.SupplyTotal, SlugPrefix: body.SlugPrefix,
 		ReleasedBy: body.ReleasedBy,
+			PerUserTotal: body.PerUserTotal,
 		LockedUntilDate: body.LockedUntilDate,
 	}
 	result, err := s.callAdminAPI(r.Context(), "/v1/official-gifts/import", req)

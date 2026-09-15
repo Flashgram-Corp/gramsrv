@@ -124,6 +124,7 @@ export function GiftsPage() {
   const [birthday, setBirthday] = useState(false);
   const [limit, setLimit] = useState("0");
   const [releasedBy, setReleasedBy] = useState("");
+  const [perUserLimit, setPerUserLimit] = useState("0");
   const [reason, setReason] = useState("");
   const [preview, setPreview] = useState<CommandResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -232,6 +233,7 @@ export function GiftsPage() {
       birthday: birthday,
       availability_total: Number(limit),
       released_by_peer: releasedBy.trim(),
+      per_user_total: Number(perUserLimit),
       sort_order: Number(sortOrder),
       ...lifecyclePayload()
     }));
@@ -258,6 +260,7 @@ return {
 		birthday: birthday,
 		availability_total: Number(limit),
 		released_by_peer: releasedBy.trim(),
+		per_user_total: Number(perUserLimit),
 		sort_order: Number(sortOrder),
 		include_collectible: includeCollectible, upgrade_stars: upgradeStars,
 		supply_total: includeCollectible ? Number(supplyTotal) : 0, slug_prefix: slugPrefix.trim().toLowerCase(),
@@ -303,14 +306,14 @@ return {
 
   function startImport() {
 	setGiftID("0"); setTitle(""); setStars("50"); setConvertStars("50"); setSortOrder("0");
-    setEnabled(true); setSupportOnly(false); setPremium(false); setBirthday(false); setLimit("0"); setReleasedBy(""); setReason(""); setFile(null); setPreview(null); setImportError("");
+    setEnabled(true); setSupportOnly(false); setPremium(false); setBirthday(false); setLimit("0"); setReleasedBy(""); setPerUserLimit("0"); setReason(""); setFile(null); setPreview(null); setImportError("");
     setImportSource("official"); setSourceGiftID(""); setOfficialQuery(""); setOfficialCategory("all"); setImportOpen(true);
   }
 
   function startRevision(gift: StarGiftRow) {
     setGiftID(gift.GiftID); setTitle(gift.Title); setStars(String(gift.Stars));
     setConvertStars(String(gift.ConvertStars)); setSortOrder(String(gift.SortOrder)); setEnabled(gift.Enabled);
-    setLimit("0"); setReleasedBy(""); setPremium(false); setBirthday(false);
+    setLimit("0"); setReleasedBy(""); setPerUserLimit("0"); setPremium(false); setBirthday(false);
     setReason(""); setFile(null); setPreview(null); setImportError("");
     setImportSource("official"); setSourceGiftID(""); setOfficialQuery(""); setOfficialCategory("all"); setImportOpen(true);
   }
@@ -441,6 +444,7 @@ return {
                 <label><span>{t("gifts.sortOrder")}</span><input type="number" value={sortOrder} onChange={(e) => { setSortOrder(e.target.value); setPreview(null); }} /></label>
                 <label><span>{t("gifts.limit")}</span><input type="number" min="0" value={limit} onChange={(e) => { setLimit(e.target.value); setPreview(null); }} /></label>
                 <label><span>{t("gifts.releasedBy")}</span><input value={releasedBy} placeholder="@durov" maxLength={128} onChange={(e) => { setReleasedBy(e.target.value); setPreview(null); }} /></label>
+                <label><span>{t("gifts.perUserLimit")}</span><input type="number" min="0" value={perUserLimit} onChange={(e) => { setPerUserLimit(e.target.value); setPreview(null); }} /></label>
               </div>
               <label className="gift-switch"><input type="checkbox" checked={premium} onChange={(e) => { setPremium(e.target.checked); setPreview(null); }} /><span className="gift-switch-track" aria-hidden="true"><span /></span><span>{t("gifts.premium")}</span></label>
               <label className="gift-switch"><input type="checkbox" checked={birthday} onChange={(e) => { setBirthday(e.target.checked); setPreview(null); }} /><span className="gift-switch-track" aria-hidden="true"><span /></span><span>{t("gifts.birthday")}</span></label>

@@ -804,6 +804,10 @@ type ImportStarGiftRequest struct {
 	// released_by owner. Resolved to a user peer before the catalog write.
 	ReleasedBy string `json:"released_by_peer,omitempty"`
 
+	// PerUserTotal caps how many copies of this gift a single user may purchase.
+	// Zero disables the per-user limit; a positive value enables limited_per_user.
+	PerUserTotal int `json:"per_user_total,omitempty"`
+
 	// Optional lifecycle authoring for the auction panel and scheduled-release
 	// ("отложенный дроп") surfaces. Zero values describe an ordinary gift.
 	// Validated by domain.StarGiftCatalogWrite.ValidateLifecycleAuthoring.
@@ -839,6 +843,9 @@ type ImportOfficialStarGiftRequest struct {
 	// ReleasedBy names the peer that originally released the imported gift,
 	// authored as "@username" or a numeric user ID.
 	ReleasedBy string `json:"released_by_peer,omitempty"`
+	// PerUserTotal overrides the snapshot's per-user cap for an imported gift.
+	// Zero keeps the snapshot value; a positive value enables limited_per_user.
+	PerUserTotal int `json:"per_user_total,omitempty"`
 	// LockedUntilDate schedules the local release of an imported official gift.
 	// Zero keeps whatever release time the snapshot carries. Validated in
 	// ImportOfficialStarGift, which requires a future timestamp.
@@ -3622,6 +3629,7 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 	}
 	if req.GiftID < 0 || req.Stars <= 0 || req.ConvertStars < 0 || req.ConvertStars > req.Stars ||
 		req.SortOrder < math.MinInt32 || req.SortOrder > math.MaxInt32 ||
+		req.PerUserTotal < 0 ||
 		len([]rune(strings.TrimSpace(req.Title))) > domain.MaxStarGiftTitleRunes {
 		return CommandResult{}, domain.ErrStarGiftInvalid
 	}
@@ -3666,6 +3674,10 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 		if releasedBy.Type != "" {
 			details["released_by"] = releasedBy
 		}
+		if req.PerUserTotal > 0 {
+			details["limited_per_user"] = true
+			details["per_user_total"] = req.PerUserTotal
+		}
 		if lifecycle.Limited {
 			details["limited"] = lifecycle.Limited
 			details["availability_total"] = lifecycle.AvailabilityTotal
@@ -3694,7 +3706,7 @@ if req.DryRun {
 		AuctionStartDate: lifecycle.AuctionStartDate, AuctionRoundDuration: lifecycle.AuctionRoundDuration,
 		AvailabilityTotal: lifecycle.AvailabilityTotal, LockedUntilDate: lifecycle.LockedUntilDate,
 		Limited: lifecycle.Limited, AvailabilityRemains: lifecycle.AvailabilityRemains,
-		ReleasedBy: releasedBy,
+		ReleasedBy: releasedBy, LimitedPerUser: req.PerUserTotal > 0, PerUserTotal: req.PerUserTotal,
 	})
 		if err != nil {
 			return CommandResult{Details: details}, err
@@ -3894,6 +3906,10 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 	req.ManifestSHA256 = hex.EncodeToString(bundle.ManifestSHA256)
 	sort.Strings(assetHashes)
 	req.AssetSHA256 = assetHashes
+	perUserTotal := bundle.Gift.PerUserTotal
+	if req.PerUserTotal > 0 {
+		perUserTotal = req.PerUserTotal
+	}
 	write := domain.StarGiftCatalogBundleWrite{Catalog: domain.StarGiftCatalogWrite{
 		GiftID: req.GiftID, Title: req.Title, Stars: req.Stars, ConvertStars: req.ConvertStars,
 		Enabled: req.Enabled, SortOrder: req.SortOrder, Animation: baseAnimation, Actor: req.Actor, CommandID: req.CommandID,
@@ -3905,13 +3921,13 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 		// Base supply is selected above; resale counters and sale dates come from
 		// local lifecycle writes. Existing inventory is preserved under the store lock.
 		Limited: limited, SoldOut: false, Birthday: req.Birthday || bundle.Gift.Birthday,
-		RequirePremium: req.RequirePremium || bundle.Gift.RequirePremium, LimitedPerUser: bundle.Gift.LimitedPerUser,
+		RequirePremium: req.RequirePremium || bundle.Gift.RequirePremium, LimitedPerUser: bundle.Gift.LimitedPerUser || req.PerUserTotal > 0,
 		SupportOnly: req.SupportOnly,
 		PeerColorAvailable: bundle.Gift.PeerColorAvailable, Auction: bundle.Gift.Auction,
 		AvailabilityRemains: 0, AvailabilityTotal: availabilityTotal,
 		AvailabilityResale: 0, FirstSaleDate: 0,
 		LastSaleDate: 0, ResellMinStars: 0,
-		PerUserTotal: bundle.Gift.PerUserTotal, LockedUntilDate: lockedUntilDate,
+		PerUserTotal: perUserTotal, LockedUntilDate: lockedUntilDate,
 		AuctionSlug: bundle.Gift.AuctionSlug, GiftsPerRound: bundle.Gift.GiftsPerRound,
 		AuctionStartDate: bundle.Gift.AuctionStartDate, UpgradeVariants: bundle.Gift.UpgradeVariants,
 		Background: background,
