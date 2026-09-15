@@ -122,9 +122,9 @@ function mockDb() {
     markRefundInternal: async () => {},
     failRefund: async () => {},
     markRefunded: async () => {},
-    addSupportMessage: async (id, chatID, text) => { const ticket = tickets.size + 1; tickets.set(ticket, { id: ticket, telegram_id: id, chat_id: chatID, text, status: "open", created_at: 0, answered_at: 0 }); return ticket; },
+    addSupportMessage: async (id, chatID, text) => { const ticket = tickets.size + 1; tickets.set(ticket, { id: ticket, telegram_id: id, chat_id: chatID, text, status: "open", created_at: 0, answered_at: 0, answered_by: 0, answer: "" }); return ticket; },
     supportMessage: async (ticketID) => tickets.get(ticketID) ?? null,
-    closeSupportMessage: async (ticketID) => { const t = tickets.get(ticketID); if (t) t.status = "answered"; },
+    closeSupportMessage: async (ticketID, answeredBy = 0, answer = "") => { const t = tickets.get(ticketID); if (t) { t.status = "answered"; t.answered_by = answeredBy; t.answer = answer; } },
     verifiedPhone: async () => null,
     bindVerifiedPhone: async () => ({ phone: "+79990000000" }),
     unbindVerifiedPhone: async () => true,
@@ -133,6 +133,13 @@ function mockDb() {
     adminLookupByUsername: async () => null,
     userByUsername: async (username) => { for (const u of users.values()) if (String(u.username ?? "").toLowerCase() === String(username ?? "").replace(/^@/, "").toLowerCase()) return u; return null; },
     adminRecentActivity: async () => ({ sales: [], refunds: [] }),
+    rateSupportTicket: async (ticketID, rating, telegramID) => {
+      const t = tickets.get(ticketID);
+      if (!t || t.telegram_id !== telegramID || t.rating) return false;
+      t.rating = rating;
+      return true;
+    },
+    recentSupportRatings: async () => [...tickets.values()].filter((t) => t.rating).map((t) => ({ id: t.id, answered_by: t.answered_by, rating: t.rating, rated_at: 0, created_at: 0 })),
     close: async () => {},
   };
   return db;
@@ -407,12 +414,15 @@ test("admin ticket reply is delivered to the user's private chat", async () => {
   await bot.handleUpdate(textUpdate({ fromID: 10, chatID: 10, text: "help me with my order" }));
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:reply" }));
   await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "1 restart your server" }));
-  const delivered = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 10).at(-1);
+  const delivered = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 10 && /restart your server/.test(call.payload.text)).at(-1);
   assert.ok(delivered, "The reply should be delivered to the user's private chat");
   assert.match(delivered.payload.text, /restart your server/);
   assert.match(delivered.payload.text, /обращени|тикет|ticket/i);
   const ticket = await db.supportMessage(1);
   assert.equal(ticket.status, "answered");
+  assert.equal(ticket.answered_by, "777", "the ticket is assigned to the exact admin who answered");
+  assert.equal(ticket.answer, "restart your server");
+  assert.ok(calls.some((call) => call.method === "sendMessage" && call.payload.chat_id === 10 && /Оцените|Rate/i.test(call.payload.text)), "the user receives a rating prompt");
   const confirm = calls.find((call) => call.method === "sendMessage" && call.payload.chat_id === 777);
   assert.match(confirm.payload.text, /#1/);
 });
@@ -434,13 +444,92 @@ test("admin replies to a ticket by replying to the notification message", async 
       reply_to_message: { message_id: 5, date: 1, chat: { id: 777, type: "private" }, from: { id: bot.botInfo.id, is_bot: true, first_name: "Test" }, text: "💬 Тикет #1\nОт: User (<code>10</code>)\n\nhelp me with my order" },
     },
   });
-  const delivered = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 10).at(-1);
+  const delivered = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 10 && /restart your server/.test(call.payload.text)).at(-1);
   assert.ok(delivered, "The reply should reach the user via Telegram native reply");
   assert.match(delivered.payload.text, /restart your server/);
   const ticket = await db.supportMessage(1);
   assert.equal(ticket.status, "answered");
+  assert.equal(ticket.answered_by, "777", "the ticket is assigned to the exact admin who answered");
+  assert.equal(ticket.answer, "restart your server");
   const confirmation = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
   assert.match(confirmation.payload.text, /#1/);
+});
+
+test("replying to a closed ticket does not leak into a leftover giveaway prompt", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  let giveawayCalls = 0;
+  db.createGiveaway = async (text, stars, limit) => {
+    giveawayCalls++;
+    if (!text || text.length > 1000 || !Number.isSafeInteger(stars) || stars <= 0 || !Number.isSafeInteger(limit) || limit < 0) throw new Error("invalid giveaway parameters");
+    return { id: "abc", text: "test", stars_amount: 10 };
+  };
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 10, chatID: 10, data: "menu:support" }));
+  await bot.handleUpdate(textUpdate({ fromID: 10, chatID: 10, text: "help me with my order" }));
+  await db.closeSupportMessage(1, "111", "already answered");
+  await db.setPending(777, "admin_giveaway");
+  await bot.handleUpdate({
+    update_id: Date.now(),
+    message: {
+      message_id: Date.now(), date: 1,
+      chat: { id: 777, type: "private" },
+      from: { id: 777, is_bot: false, first_name: "Admin", language_code: "ru" },
+      text: "restart your server",
+      reply_to_message: { message_id: 5, date: 1, chat: { id: 777, type: "private" }, from: { id: bot.botInfo.id, is_bot: true, first_name: "Test" }, text: "💬 Тикет #1\nОт: User (<code>10</code>)\n\nhelp me with my order" },
+    },
+  });
+  assert.equal(giveawayCalls, 0, "a ticket reply must never reach the giveaway creator");
+  const adminReply = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
+  assert.match(adminReply.payload.text, /Обращение не найдено|The ticket was not found/i);
+});
+
+test("admin input errors are sent with HTML parse mode so <code> renders", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.ownerIDs.add(777);
+  db.createGiveaway = async (text, stars, limit) => {
+    if (!text || text.length > 1000 || !Number.isSafeInteger(stars) || stars <= 0 || !Number.isSafeInteger(limit) || limit < 0) throw new Error("invalid giveaway parameters");
+    return { id: "abc", text: "test", stars_amount: 10 };
+  };
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:giveaway" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "not a giveaway" }));
+  const reply = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
+  assert.equal(reply.payload.parse_mode, "HTML", "admin errors must render <code> tags");
+  assert.match(reply.payload.text, /invalid giveaway parameters/);
+  assert.match(reply.payload.text, /<code>/);
+});
+
+test("a user can rate a closed ticket once", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.addSupportMessage(10, 10, "help me with my order");
+  await db.closeSupportMessage(1, "777", "restart your server");
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 10, chatID: 10, data: "rate:1:5" }));
+  const thanks = calls.filter((call) => call.method === "editMessageText" && call.payload.chat_id === 10).at(-1);
+  assert.match(thanks.payload.text, /Спасибо|Thank you/i);
+  assert.match(thanks.payload.text, /5\/5/);
+  assert.equal(await db.rateSupportTicket(1, 3, 10), false, "a second rating from the same user is rejected");
+});
+
+test("admin audit lists support ticket ratings", async () => {
+  const { bot, calls, db, config, gramsrv } = fixture();
+  config.ownerIDs.add(777);
+  gramsrv.adminCommands = async () => [];
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await db.addSupportMessage(10, 10, "help me with my order");
+  await db.closeSupportMessage(1, "777", "restart your server");
+  const rated = await db.rateSupportTicket(1, 5, 10);
+  assert.equal(rated, true);
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:audit" }));
+  const audit = calls.filter((call) => call.method === "editMessageText" || call.method === "sendMessage").at(-1);
+  const text = audit.payload.text ?? audit.payload.text;
+  assert.match(text, /Тикет #1|Ticket #1/);
+  assert.match(text, /⭐⭐⭐⭐⭐/);
+  assert.match(text, /777/);
 });
 
 test("admin lookup result shows the admin keyboard", async () => {

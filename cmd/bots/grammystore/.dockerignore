@@ -4,6 +4,9 @@
 !package-lock.json
 !src/
 !src/**
+!db/migrate.js
+!db/migrations
+!db/migrations/**
 # Keep accidental credentials/runtime files out even when placed under src/.
 **/.env
 **/.env.*

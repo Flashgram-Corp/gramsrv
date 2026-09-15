@@ -188,15 +188,15 @@ verification codes to expire. The bot requires a successful server lookup showin
 no account still uses it. Refunded numbers are retired permanently, never recycled.
 See [number lifecycle and verification invariants](NUMBER_LIFECYCLE.md).
 
-Existing PostgreSQL deployments must apply `db/migrations/001-number-retirement.sql`,
-`db/migrations/002-refund-provider-charge.sql`,
-`db/migrations/003-users-server-user-id-unique.sql`,
-`db/migrations/004-number-offers.sql`,
-`db/migrations/005-drop-number-offers.sql` and
-`db/migrations/006-free-number-daily-limit.sql`
-before upgrading (fresh deployments use the updated `db/init.sql`). Back up the
-database first. The migration does not repair unsafe pre-release ownership state.
-Local images use an allowlisted build context; `.env` is provided only at runtime.
+Schema upgrades are applied automatically: the container runs `npm start`,
+which first applies every file in `db/migrations/` (001 through 007) against
+the configured database before starting the bot. Each migration is idempotent,
+so running all of them on every boot is safe — on a fresh install created from
+`db/init.sql` they are no-ops, on an existing install they close any schema
+gap. Back up the database before upgrading. Migrations do not repair unsafe
+pre-release ownership state.
+Local images use an allowlisted build context (`.dockerignore`); `.env` is
+provided only at runtime.
 
 ### Production deployment (GHCR image)
 

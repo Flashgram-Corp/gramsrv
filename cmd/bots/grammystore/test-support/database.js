@@ -9,6 +9,7 @@ export async function openTestDatabase(options = {}) {
   const url = new URL(process.env.DATABASE_URL);
   url.searchParams.set("options", `-c search_path=${schema}`);
   const db = new BotDatabase(url.toString(), options);
+  db.connectionString = url.toString();
   const close = db.close.bind(db);
   db.close = async () => {
     await close();

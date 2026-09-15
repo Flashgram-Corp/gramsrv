@@ -139,7 +139,15 @@ CREATE TABLE support_messages (
   text TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open',
   created_at BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-  answered_at BIGINT NOT NULL DEFAULT 0
+  answered_at BIGINT NOT NULL DEFAULT 0,
+  answered_by BIGINT NOT NULL DEFAULT 0,
+  answer TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE support_ratings (
+  ticket_id INTEGER PRIMARY KEY REFERENCES support_messages(id),
+  rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  created_at BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
 );
 
 CREATE TABLE refunds (
