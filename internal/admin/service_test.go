@@ -1472,18 +1472,65 @@ func TestImportOfficialStarGiftPreservesCraftedRarityAndPublishesBundle(t *testi
 		t.Fatalf("imported models=%+v backdrops=%+v", models, gifts.lastBundle.Collectible.Backdrops)
 	}
 	catalog := gifts.lastBundle.Catalog
-	// The operator's "Уникальный тираж" (supply_total) is derived from the snapshot's
-	// availability when absent, so a finite unique supply now limits the base gift to
-	// the same run size. Sold-out, resale, and sale-date state still does not leak.
-	if !catalog.Limited || catalog.SoldOut || catalog.AvailabilityTotal != 10 || catalog.AvailabilityRemains != 10 ||
+	// The collectible supply ("уникальный тираж") configures the pool alone and
+	// never turns the base gift into a limited edition: without the explicit
+	// Limited flag the base catalog stays unlimited even when the snapshot and
+	// pool carry finite numbers. Sold-out, resale, and sale-date state still does
+	// not leak into a fresh local identity.
+	if catalog.Limited || catalog.SoldOut || catalog.AvailabilityTotal != 0 || catalog.AvailabilityRemains != 0 ||
 		catalog.AvailabilityResale != 0 || catalog.FirstSaleDate != 0 || catalog.LastSaleDate != 0 || catalog.ResellMinStars != 0 {
 		t.Fatalf("unexpected local catalog state: limited=%v sold_out=%v total=%d remains=%d resale=%d first=%d last=%d resell_min=%d",
 			catalog.Limited, catalog.SoldOut, catalog.AvailabilityTotal, catalog.AvailabilityRemains,
 			catalog.AvailabilityResale, catalog.FirstSaleDate, catalog.LastSaleDate, catalog.ResellMinStars)
 	}
+	if gifts.lastBundle.Collectible == nil || gifts.lastBundle.Collectible.SupplyTotal != source.bundle.Gift.AvailabilityTotal {
+		t.Fatalf("collectible pool supply was not preserved: %+v", gifts.lastBundle.Collectible)
+	}
 	if catalog.OfficialGiftID != source.bundle.Gift.ID || !bytes.Equal(catalog.OfficialSourceJSON, source.bundle.SourceJSON) ||
 		!bytes.Equal(catalog.SourceManifestSHA256, source.bundle.ManifestSHA256) {
 		t.Fatalf("official provenance was not preserved: %+v", catalog)
+	}
+}
+
+func TestImportOfficialStarGiftAvailabilityLimitSeedsBaseSupply(t *testing.T) {
+	permille := 922
+	source := &fakeOfficialGiftsSource{bundle: officialgifts.Bundle{
+		ManifestSHA256: bytesOf(0x42, 32),
+		SourceJSON:     []byte(`{"id":5170145012310081615,"limited":true,"availability_total":10}`),
+		Gift: officialgifts.Gift{
+			ID: 5170145012310081615, Stars: 50, ConvertStars: 25, UpgradeStars: 100, DocumentID: 1,
+			Limited: true, AvailabilityTotal: 10, UpgradeVariants: 2,
+		},
+		BaseDocument: officialgifts.Document{ID: 1, FileName: "gift.tgs", SHA256: strings.Repeat("a", 64), Data: []byte("gift")},
+		Collectible: &officialgifts.CollectibleSet{
+			Models: []officialgifts.Model{
+				{Name: "Regular", DocumentID: 2, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}, Document: officialgifts.Document{ID: 2, FileName: "regular.tgs", SHA256: strings.Repeat("b", 64), Data: []byte("regular")}},
+				{Name: "Regular Two", DocumentID: 5, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}, Document: officialgifts.Document{ID: 5, FileName: "regular-two.tgs", SHA256: strings.Repeat("e", 64), Data: []byte("regular-two")}},
+			},
+			Patterns: []officialgifts.Pattern{
+				{Name: "Pattern", DocumentID: 4, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}, Document: officialgifts.Document{ID: 4, FileName: "pattern.tgs", SHA256: strings.Repeat("d", 64), Data: []byte("pattern")}},
+				{Name: "Pattern Two", DocumentID: 6, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}, Document: officialgifts.Document{ID: 6, FileName: "pattern-two.tgs", SHA256: strings.Repeat("f", 64), Data: []byte("pattern-two")}},
+			},
+			Backdrops: []officialgifts.Backdrop{
+				{Name: "Black", BackdropID: 0, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}},
+				{Name: "White", BackdropID: 1, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}},
+			},
+		},
+	}}
+	gifts := &fakeGiftsService{}
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, OfficialGifts: source, Now: fixedNow})
+	req := ImportOfficialStarGiftRequest{SourceGiftID: "5170145012310081615", Enabled: true, IncludeCollectible: true, AvailabilityTotal: 10, SupplyTotal: 10}
+	req.CommandMeta = CommandMeta{CommandID: "exec-official-limited", Actor: "ops", Reason: "official snapshot", DryRun: false}
+	result, err := svc.ImportOfficialStarGift(context.Background(), req)
+	if err != nil || gifts.createCalls != 1 {
+		t.Fatalf("result=%+v err=%v create=%d", result, err, gifts.createCalls)
+	}
+	catalog := gifts.lastBundle.Catalog
+	if !catalog.Limited || catalog.AvailabilityTotal != 10 || catalog.AvailabilityRemains != 10 || catalog.AvailabilityResale != 0 {
+		t.Fatalf("gift limit did not seed base supply: %+v", catalog)
+	}
+	if gifts.lastBundle.Collectible == nil || gifts.lastBundle.Collectible.SupplyTotal != 10 {
+		t.Fatalf("collectible pool supply not seeded: %+v", gifts.lastBundle.Collectible)
 	}
 }
 

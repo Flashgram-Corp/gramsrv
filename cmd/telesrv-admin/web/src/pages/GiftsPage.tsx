@@ -120,6 +120,7 @@ export function GiftsPage() {
   const [officialUnlockAt, setOfficialUnlockAt] = useState(() => localInputValue(3600));
   const [enabled, setEnabled] = useState(true);
   const [supportOnly, setSupportOnly] = useState(false);
+  const [limit, setLimit] = useState("0");
   const [reason, setReason] = useState("");
   const [preview, setPreview] = useState<CommandResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -224,6 +225,7 @@ export function GiftsPage() {
 			convert_stars: convertStars,
       enabled,
       support_only: supportOnly,
+      availability_total: Number(limit),
       sort_order: Number(sortOrder),
       ...lifecyclePayload()
     }));
@@ -246,6 +248,7 @@ return {
 		command_id: commandID, reason: reason.trim(), confirm,
 		source_gift_id: sourceGiftID, gift_id: giftID, title: title.trim(),
 		stars, convert_stars: convertStars, enabled, support_only: supportOnly,
+		availability_total: Number(limit),
 		sort_order: Number(sortOrder),
 		include_collectible: includeCollectible, upgrade_stars: upgradeStars,
 		supply_total: includeCollectible ? Number(supplyTotal) : 0, slug_prefix: slugPrefix.trim().toLowerCase(),
@@ -256,6 +259,7 @@ return {
   function chooseOfficial(gift: OfficialStarGiftRow) {
     setSourceGiftID(gift.source_gift_id);
     setTitle(gift.title || t("gifts.officialUnnamed", { id: gift.source_gift_id }));
+    setLimit(gift.limited && gift.availability_total > 0 ? String(gift.availability_total) : "0");
     setStars(String(gift.stars));
     setConvertStars(String(gift.convert_stars));
     setIncludeCollectible(gift.can_upgrade);
@@ -290,13 +294,14 @@ return {
 
   function startImport() {
 	setGiftID("0"); setTitle(""); setStars("50"); setConvertStars("50"); setSortOrder("0");
-    setEnabled(true); setSupportOnly(false); setReason(""); setFile(null); setPreview(null); setImportError("");
+    setEnabled(true); setSupportOnly(false); setLimit("0"); setReason(""); setFile(null); setPreview(null); setImportError("");
     setImportSource("official"); setSourceGiftID(""); setOfficialQuery(""); setOfficialCategory("all"); setImportOpen(true);
   }
 
   function startRevision(gift: StarGiftRow) {
     setGiftID(gift.GiftID); setTitle(gift.Title); setStars(String(gift.Stars));
     setConvertStars(String(gift.ConvertStars)); setSortOrder(String(gift.SortOrder)); setEnabled(gift.Enabled);
+    setLimit("0");
     setReason(""); setFile(null); setPreview(null); setImportError("");
     setImportSource("official"); setSourceGiftID(""); setOfficialQuery(""); setOfficialCategory("all"); setImportOpen(true);
   }
@@ -425,6 +430,7 @@ return {
                 <label><span>{t("gifts.stars")}</span><input type="number" min="1" value={stars} onChange={(e) => { setStars(e.target.value); setPreview(null); }} /></label>
                 <label><span>{t("gifts.convertStars")}</span><input type="number" min="0" value={convertStars} onChange={(e) => { setConvertStars(e.target.value); setPreview(null); }} /></label>
                 <label><span>{t("gifts.sortOrder")}</span><input type="number" value={sortOrder} onChange={(e) => { setSortOrder(e.target.value); setPreview(null); }} /></label>
+                <label><span>{t("gifts.limit")}</span><input type="number" min="0" value={limit} onChange={(e) => { setLimit(e.target.value); setPreview(null); }} /></label>
               </div>
               {importSource === "file" ? <section className="gift-lifecycle">
                 <span className="gift-field-label">{t("gifts.lifecycle.label")}</span>

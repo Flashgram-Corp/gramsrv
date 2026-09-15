@@ -782,6 +782,7 @@ type ImportStarGiftRequest struct {
 	CommandMeta
 	GiftID       int64  `json:"gift_id,omitempty"`
 	Title        string `json:"title"`
+	Limited      bool   `json:"limited,omitempty"`
 	Stars        int64  `json:"stars"`
 	ConvertStars int64  `json:"convert_stars"`
 	Enabled      bool   `json:"enabled"`
@@ -810,6 +811,8 @@ type ImportOfficialStarGiftRequest struct {
 	SourceGiftID       string `json:"source_gift_id"`
 	GiftID             int64  `json:"gift_id,omitempty"`
 	Title              string `json:"title"`
+	Limited            bool   `json:"limited,omitempty"`
+	AvailabilityTotal  int    `json:"availability_total,omitempty"`
 	Stars              int64  `json:"stars"`
 	ConvertStars       int64  `json:"convert_stars"`
 	Enabled            bool   `json:"enabled"`
@@ -3591,6 +3594,9 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 	// Fills in limited / availability_remains / a concrete auction_start_date,
 	// which the revision's CHECK constraints require for an auction.
 	lifecycle.NormalizeLifecycleAuthoring(now)
+	// An explicitly authored limited flag wins over the automatic derivation;
+	// the catalog enforces that finite gifts carry availability_total > 0.
+	lifecycle.Limited = req.Limited || lifecycle.Limited
 	animation, err := s.gifts.PrepareAnimation(req.FileName, req.Data)
 	if err != nil {
 		return CommandResult{}, err
@@ -3605,15 +3611,17 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 			"sha256": req.ContentSHA, "width": animation.Width, "height": animation.Height,
 			"frame_rate": animation.FrameRate, "compressed_bytes": len(animation.TGS), "json_bytes": len(animation.JSON),
 		}
+		if lifecycle.Limited {
+			details["limited"] = lifecycle.Limited
+			details["availability_total"] = lifecycle.AvailabilityTotal
+			details["availability_remains"] = lifecycle.AvailabilityRemains
+		}
 		if lifecycle.Auction {
 			details["auction"] = true
 			details["auction_slug"] = lifecycle.AuctionSlug
 			details["gifts_per_round"] = lifecycle.GiftsPerRound
 			details["auction_start_date"] = lifecycle.AuctionStartDate
 			details["auction_round_duration"] = lifecycle.AuctionRoundDuration
-			details["availability_total"] = lifecycle.AvailabilityTotal
-			details["limited"] = lifecycle.Limited
-			details["availability_remains"] = lifecycle.AvailabilityRemains
 		}
 		if lifecycle.LockedUntilDate > 0 {
 			details["locked_until_date"] = lifecycle.LockedUntilDate
@@ -3725,18 +3733,29 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 		lockedUntilDate = req.LockedUntilDate
 	}
 
-	// Auctions require finite inventory. For ordinary gifts, collectible supply
-	// limits a new base gift only when the operator imports that pool. A hidden,
-	// inactive collectible input must never cap a basic gift's sales.
+	// Auctions require finite inventory. For ordinary gifts, the base catalog is
+	// finite only when the operator sets a base limit ("Лимит подарков"): any
+	// positive value makes the base gift a limited edition of that exact size.
+	// The collectible supply ("уникальный тираж") configures the pool alone and
+	// must never turn a regular gift into a limited one.
 	limited, availabilityTotal := false, 0
 	if bundle.Gift.Auction {
-		limited, availabilityTotal = true, bundle.Gift.AvailabilityTotal
+		limited = true
+		availabilityTotal = bundle.Gift.AvailabilityTotal
 		if availabilityTotal <= 0 {
 			availabilityTotal = req.SupplyTotal
 		}
 	}
-	if req.IncludeCollectible && req.SupplyTotal > 0 && !limited {
-		limited, availabilityTotal = true, req.SupplyTotal
+	if req.AvailabilityTotal > 0 {
+		limited, availabilityTotal = true, req.AvailabilityTotal
+	}
+	// Legacy boolean alias: clients that only set the flag still produce a
+	// finite gift, seeded from the collectible supply.
+	if req.Limited && !limited {
+		limited = true
+		if availabilityTotal <= 0 {
+			availabilityTotal = req.SupplyTotal
+		}
 	}
 
 	baseAnimation, err := s.gifts.PrepareOfficialAnimation(bundle.BaseDocument.FileName, bundle.BaseDocument.Data)

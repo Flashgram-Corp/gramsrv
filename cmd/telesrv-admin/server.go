@@ -2074,6 +2074,7 @@ type importStarGiftAPIRequest struct {
 	Confirm      bool   `json:"confirm"`
 	GiftID       int64  `json:"gift_id,string"`
 	Title        string `json:"title"`
+	Limited      bool   `json:"limited,omitempty"`
 	Stars        int64  `json:"stars,string"`
 	ConvertStars int64  `json:"convert_stars,string"`
 	Enabled      bool   `json:"enabled"`
@@ -2124,6 +2125,7 @@ func (s *server) handleImportStarGiftAPI(w http.ResponseWriter, r *http.Request)
 		CommandMeta:  s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "import-gift"),
 		GiftID:       body.GiftID,
 		Title:        body.Title,
+		Limited:      body.Limited,
 		Stars:        body.Stars,
 		ConvertStars: body.ConvertStars,
 		Enabled:      body.Enabled,
@@ -2150,6 +2152,8 @@ type importOfficialStarGiftAPIRequest struct {
 	SourceGiftID       string `json:"source_gift_id"`
 	GiftID             int64  `json:"gift_id,string"`
 	Title              string `json:"title"`
+	Limited            bool   `json:"limited,omitempty"`
+	AvailabilityTotal  int    `json:"availability_total"`
 	Stars              int64  `json:"stars,string"`
 	ConvertStars       int64  `json:"convert_stars,string"`
 	Enabled            bool   `json:"enabled"`
@@ -2176,6 +2180,7 @@ func (s *server) handleImportOfficialStarGiftAPI(w http.ResponseWriter, r *http.
 	req := admin.ImportOfficialStarGiftRequest{
 		CommandMeta:  s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "import-official-gift"),
 		SourceGiftID: body.SourceGiftID, GiftID: body.GiftID, Title: body.Title,
+		Limited: body.Limited, AvailabilityTotal: body.AvailabilityTotal,
 		Stars: body.Stars, ConvertStars: body.ConvertStars, Enabled: body.Enabled, SortOrder: body.SortOrder,
 		SupportOnly: body.SupportOnly,
 		IncludeCollectible: body.IncludeCollectible, UpgradeStars: body.UpgradeStars,

@@ -80,13 +80,17 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 	giftService := stargiftapp.NewService(NewStarGiftStore(pool), inventoryBlob{}, 2)
 	svc := admin.NewService(admin.Dependencies{Commands: NewAdminStore(pool), Gifts: giftService, OfficialGifts: source})
 	lifecycle := NewStarGiftLifecycleStore(pool, NewMessageStore(pool), 10000)
-	importGift := func(command string, giftID int64, supply int, include bool) int64 {
+	importGift := func(command string, giftID int64, supply int, include bool, limited ...bool) int64 {
 		t.Helper()
-		result, err := svc.ImportOfficialStarGift(ctx, admin.ImportOfficialStarGiftRequest{
+		req := admin.ImportOfficialStarGiftRequest{
 			CommandMeta:  admin.CommandMeta{CommandID: command + "-" + suffix, Actor: "review", Reason: "inventory regression"},
 			SourceGiftID: "72", GiftID: giftID, Enabled: true, IncludeCollectible: include, SupplyTotal: supply,
 			UpgradeStars: 100, SlugPrefix: "probe-" + suffix,
-		})
+		}
+		if len(limited) > 0 {
+			req.Limited = limited[0]
+		}
+		result, err := svc.ImportOfficialStarGift(ctx, req)
 		if err != nil {
 			t.Fatalf("import: %v", err)
 		}
@@ -117,7 +121,7 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 	t.Run("inactive collectible defaults do not cap purchases", func(t *testing.T) {
 		// chooseOfficial uses max(upgrade_variants, 1) when availability_total is 0,
 		// including when can_upgrade is false and the supply field is hidden.
-		id := importGift("basic", 0, 1, false)
+		id := importGift("basic", 0, 1, false, false)
 		if err := purchase(id, "basic-first"); err != nil {
 			t.Fatal(err)
 		}
@@ -126,12 +130,12 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 		}
 	})
 	t.Run("partial and exhausted stock survives repeated imports", func(t *testing.T) {
-		id := importGift("limited", 0, 2, true)
+		id := importGift("limited", 0, 2, true, true)
 		for i := 0; i < 2; i++ {
 			if err := purchase(id, fmt.Sprintf("limited-%d", i)); err != nil {
 				t.Fatal(err)
 			}
-			importGift(fmt.Sprintf("partial-revision-%d", i), id, 2, true)
+			importGift(fmt.Sprintf("partial-revision-%d", i), id, 2, true, true)
 			entry, err := catalogEntryByID(ctx, pool, id)
 			if err != nil {
 				t.Fatal(err)
@@ -147,7 +151,7 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 		if before.Gift.AvailabilityRemains != 0 || !before.Gift.SoldOut {
 			t.Fatalf("exhausted limited edition did not flip sold_out: limited=%v sold_out=%v remains=%d", before.Gift.Limited, before.Gift.SoldOut, before.Gift.AvailabilityRemains)
 		}
-		importGift("limited-revision", id, 2, true)
+		importGift("limited-revision", id, 2, true, true)
 		after, err := catalogEntryByID(ctx, pool, id)
 		if err != nil {
 			t.Fatal(err)
@@ -162,7 +166,7 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 			t.Errorf("reimport restocked an exhausted edition and permitted total sold %d > supply %d", count, after.Gift.AvailabilityTotal)
 		}
 		// Omitting the pool and all supply fields must not remove an existing cap.
-		importGift("limited-no-pool", id, 0, false)
+		importGift("limited-no-pool", id, 0, false, true)
 		entry, err := catalogEntryByID(ctx, pool, id)
 		if err != nil {
 			t.Fatal(err)
@@ -178,7 +182,7 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 			}
 			_, err := svc.ImportOfficialStarGift(ctx, admin.ImportOfficialStarGiftRequest{
 				CommandMeta:  admin.CommandMeta{CommandID: fmt.Sprintf("change-%d-%s", supply, suffix), Actor: "review", Reason: "supply bounds"},
-				SourceGiftID: "72", GiftID: id, Enabled: true, IncludeCollectible: true, SupplyTotal: supply, UpgradeStars: 100, SlugPrefix: "probe-" + suffix,
+				SourceGiftID: "72", GiftID: id, Enabled: true, IncludeCollectible: true, SupplyTotal: supply, UpgradeStars: 100, SlugPrefix: "probe-" + suffix, Limited: true,
 			})
 			if !errors.Is(err, domain.ErrStarGiftLifecycleInvalid) {
 				t.Fatalf("changed supply=%d err=%v", supply, err)
@@ -193,7 +197,7 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 		}
 	})
 	t.Run("purchase racing revision never restores stock", func(t *testing.T) {
-		id := importGift("racing", 0, 20, true)
+		id := importGift("racing", 0, 20, true, true)
 		for i := 0; i < 10; i++ {
 			start := make(chan struct{})
 			imported := make(chan error, 1)
@@ -202,7 +206,7 @@ func TestOfficialStarGiftInventoryPostgres(t *testing.T) {
 				<-start
 				_, err := svc.ImportOfficialStarGift(ctx, admin.ImportOfficialStarGiftRequest{
 					CommandMeta:  admin.CommandMeta{CommandID: fmt.Sprintf("race-import-%d-%s", i, suffix), Actor: "review", Reason: "concurrent inventory"},
-					SourceGiftID: "72", GiftID: id, Enabled: true, IncludeCollectible: true, SupplyTotal: 20, UpgradeStars: 100, SlugPrefix: "race-" + suffix,
+					SourceGiftID: "72", GiftID: id, Enabled: true, IncludeCollectible: true, SupplyTotal: 20, UpgradeStars: 100, SlugPrefix: "race-" + suffix, Limited: true,
 				})
 				imported <- err
 			}()
