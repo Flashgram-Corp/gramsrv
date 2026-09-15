@@ -352,6 +352,26 @@ export function createBot({ config, db, gramsrv }) {
     if (chatID > 0 && messageID) setTimeout(() => bot.api.deleteMessage(chatID, messageID).catch(() => {}), delayMs).unref?.();
   }
 
+  // A ticket is assigned to the admin who answered it. The other admins still
+  // receive the full conversation (question + answer) so the thread stays
+  // visible to the whole team while ownership is tracked.
+  async function notifyOtherAdmins(answeringAdmin, ticketID) {
+    const ticket = await db.supportMessage(ticketID);
+    if (!ticket) return;
+    for (const owner of config.ownerIDs) {
+      if (owner === answeringAdmin) continue;
+      const answeredBy = Number(ticket.answered_by) || answeringAdmin;
+      const message = `${tr(owner, "supportAnswerNotification", { ticket: ticketID, question: escapeHTML(ticket.text), answer: escapeHTML(ticket.answer || "") })}\n${tr(owner, "supportAnsweredBy", { admin: String(answeredBy) })}`;
+      await bot.api.sendMessage(owner, message, { parse_mode: "HTML" }).catch(() => {});
+    }
+  }
+
+  async function sendRatingPrompt(ticketID, telegramID) {
+    const kb = new InlineKeyboard();
+    for (let i = 1; i <= 5; i++) kb.text(`⭐${i}`, `rate:${ticketID}:${i}`);
+    await bot.api.sendMessage(telegramID, tr(telegramID, "supportRatePrompt", { ticket: ticketID }), { parse_mode: "HTML", reply_markup: kb }).catch(() => {});
+  }
+
   async function numbersMenu(ctx) {
     const currentNumber = await db.currentNumber(ctx.from.id);
     if (isRealMode(config)) {
@@ -881,6 +901,15 @@ export function createBot({ config, db, gramsrv }) {
     }
   });
 
+  bot.callbackQuery(/^rate:(\d+):([1-5])$/, async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const ticketID = Number(ctx.match[1]);
+    const rating = Number(ctx.match[2]);
+    const ok = await db.rateSupportTicket(ticketID, rating, ctx.from.id);
+    const language = languageOf(ctx.from.id);
+    await editOrReply(ctx, ok ? tr(ctx.from.id, "supportRateThanks", { rating }) : tr(ctx.from.id, "supportRateAlready"), backKeyboard(language, "menu:home"));
+  });
+
   bot.callbackQuery(/^admin:(.+)$/, async (ctx) => {
     await ctx.answerCallbackQuery();
     if (!isOwner(config, ctx.from.id)) return;
@@ -916,17 +945,24 @@ export function createBot({ config, db, gramsrv }) {
       return editOrReply(ctx, tr(ctx.from.id, "adminPromptLookup"), backKeyboard(language, "admin:menu"));
     }
     if (action === "audit") {
-      const commands = await gramsrv.adminCommands(30).catch((error) => { console.error("Admin audit failed", error); return null; });
-      if (commands === null) return editOrReply(ctx, tr(ctx.from.id, "adminAuditFailed"), backKeyboard(language, "admin:menu"));
-      if (!commands.length) return editOrReply(ctx, tr(ctx.from.id, "adminAuditEmpty"), backKeyboard(language, "admin:menu"));
-      const lines = commands.map((cmd) => {
+      const commands = typeof gramsrv.adminCommands === "function"
+        ? await gramsrv.adminCommands(30).catch((error) => { console.error("Admin audit failed", error); return null; })
+        : null;
+      const lines = [];
+      const ratings = await db.recentSupportRatings(10).catch((error) => { console.error("Support ratings failed", error); return []; });
+      for (const cmd of commands ?? []) {
         const status = cmd.status === "failed" ? "❌" : cmd.status === "running" ? "⏳" : "✅";
         const code = cmd.actor ? `<code>${escapeHTML(cmd.actor)}</code>` : "—";
         const target = cmd.target_user_id ? ` · <code>${cmd.target_user_id}</code>` : "";
         const detail = cmd.error ? ` · ❌ <code>${escapeHTML(cmd.error)}</code>` : "";
         const reason = cmd.reason ? ` · ${escapeHTML(cmd.reason)}` : "";
-        return `${status} <code>${escapeHTML(cmd.action)}</code>${target} · ${code} · ${formatEpoch(cmd.created_at ? Math.floor(new Date(cmd.created_at).getTime() / 1000) : 0)}${reason}${detail}`;
-      });
+        lines.push(`${status} <code>${escapeHTML(cmd.action)}</code>${target} · ${code} · ${formatEpoch(cmd.created_at ? Math.floor(new Date(cmd.created_at).getTime() / 1000) : 0)}${reason}${detail}`);
+      }
+      for (const rating of ratings) {
+        const admin = rating.answered_by ? `<code>${escapeHTML(String(rating.answered_by))}</code>` : "—";
+        lines.push(`⭐ ${tr(ctx.from.id, "adminAuditRating", { ticket: rating.id, stars: "⭐".repeat(rating.rating) })} · ${admin} · ${formatEpoch(rating.rated_at || rating.created_at)}`);
+      }
+      if (!lines.length) return editOrReply(ctx, tr(ctx.from.id, "adminAuditEmpty"), backKeyboard(language, "admin:menu"));
       return editOrReply(ctx, `${tr(ctx.from.id, "adminAuditTitle")}\n\n${lines.join("\n")}`, backKeyboard(language, "admin:menu"));
     }
     const promptKeys = {
@@ -957,12 +993,19 @@ export function createBot({ config, db, gramsrv }) {
       if (ticketMatch) {
         const ticketID = Number(ticketMatch[1]);
         const ticket = await db.supportMessage(ticketID);
-        if (ticket?.status === "open") {
-          if (!input) return ctx.reply(tr(ctx.from.id, "errorEmptyReply"));
-          await bot.api.sendMessage(ticket.telegram_id, tr(ticket.telegram_id, "supportReply", { ticket: ticketID, answer: escapeHTML(input) }), { parse_mode: "HTML" });
-          await db.closeSupportMessage(ticketID);
-          return ctx.reply(tr(ctx.from.id, "supportReplySent", { ticket: ticketID }), { reply_markup: adminKeyboard(language) });
+        if (!ticket) return ctx.reply(tr(ctx.from.id, "errorTicketMissing"));
+        if (!input) return ctx.reply(tr(ctx.from.id, "errorEmptyReply"));
+        const assignedTo = String(ctx.from.id);
+        // Atomic claim: only the first admin wins the open -> answered
+        // transition; a loser must not deliver a second answer over it.
+        const claimed = await db.closeSupportMessage(ticketID, assignedTo, input);
+        if (!claimed) {
+          return ctx.reply(tr(ctx.from.id, "supportAlreadyAnswered", { ticket: ticketID }), { reply_markup: adminKeyboard(language) });
         }
+        await bot.api.sendMessage(ticket.telegram_id, tr(ticket.telegram_id, "supportReply", { ticket: ticketID, answer: escapeHTML(input) }), { parse_mode: "HTML" });
+        await notifyOtherAdmins(ctx.from.id, ticketID);
+        await sendRatingPrompt(ticketID, ticket.telegram_id);
+        return ctx.reply(tr(ctx.from.id, "supportReplySent", { ticket: ticketID }), { reply_markup: adminKeyboard(language) });
       }
     }
 
@@ -1243,8 +1286,17 @@ export function createBot({ config, db, gramsrv }) {
         if (!Number.isSafeInteger(ticketID) || ticketID <= 0) throw new Error("invalid ticket ID");
         const ticket = await db.supportMessage(ticketID);
         if (!ticket || !answer) throw new Error("ticket not found or reply is empty");
+        // Atomic claim: a concurrent admin who already answered keeps the
+        // ticket; the loser is told instead of overwriting answered_by/answer.
+        const claimed = await db.closeSupportMessage(ticketID, String(ctx.from.id), answer);
+        if (!claimed) {
+          await db.clearPending(ctx.from.id);
+          return adminResult(tr(ctx.from.id, "supportAlreadyAnswered", { ticket: ticketID }));
+        }
         await bot.api.sendMessage(ticket.telegram_id, tr(ticket.telegram_id, "supportReply", { ticket: ticketID, answer: escapeHTML(answer) }), { parse_mode: "HTML" });
-        await db.closeSupportMessage(ticketID); await db.clearPending(ctx.from.id);
+        await db.clearPending(ctx.from.id);
+        await notifyOtherAdmins(ctx.from.id, ticketID);
+        await sendRatingPrompt(ticketID, ticket.telegram_id);
         return adminResult(tr(ctx.from.id, "supportReplySent", { ticket: ticketID }));
       }
       if (pending.kind === "admin_rate") {
@@ -1290,7 +1342,7 @@ export function createBot({ config, db, gramsrv }) {
     } catch (error) {
       console.error("Bot input action failed", pending.kind, error);
       if (pending.kind.startsWith("admin_")) await db.clearPending(ctx.from.id);
-      await ctx.reply(adminErrorMessage(language, error));
+      await ctx.reply(adminErrorMessage(language, error), { parse_mode: "HTML" });
     }
   });
 

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { openTestDatabase } from "../test-support/database.js";
+import { applyMigrations } from "../db/migrate.js";
 
 let db;
 test.before(async () => { if (process.env.DATABASE_URL) db = await openTestDatabase(); });
@@ -67,9 +68,20 @@ test("code access, support replies, refunds and pending wheel awards are durable
   const ticket = await db.addSupportMessage(1, 10, "help");
   const msg = await db.supportMessage(ticket);
   assert.equal(msg.status, "open");
-  await db.closeSupportMessage(ticket);
+  assert.equal(await db.rateSupportTicket(ticket, 5, 1), false, "an open ticket cannot be rated before it is answered");
+  assert.equal(await db.closeSupportMessage(ticket, 777, "restart your server"), true);
+  assert.equal(await db.closeSupportMessage(ticket, 888, "second answer"), false, "a second admin cannot overwrite the claim half");
   const closed = await db.supportMessage(ticket);
   assert.equal(closed.status, "answered");
+  assert.equal(closed.answered_by, 777);
+  assert.equal(closed.answer, "restart your server");
+  assert.equal(await db.rateSupportTicket(ticket, 5, 1), true);
+  assert.equal(await db.rateSupportTicket(ticket, 3, 1), false, "a duplicate rating is rejected");
+  assert.equal(await db.rateSupportTicket(ticket, 4, 2), false, "another user cannot rate the ticket");
+  const ratings = await db.recentSupportRatings(10);
+  assert.equal(ratings.length, 1);
+  assert.equal(ratings[0].rating, 5);
+  assert.equal(ratings[0].answered_by, 777);
 
   await db.addSale({ product: "stars_1", title: "20 Stars", starsPrice: 1, recipientID: 100, buyerID: 1, buyerName: "Owner", chargeID: "charge-refund", fulfillment: { kind: "stars", recipientID: 100, amount: 20 } });
   const sale = await db.saleByCharge("charge-refund");
@@ -348,4 +360,22 @@ test("admin exact lookups return correct data", async () => {
   assert.equal(byPhone.owner.telegram_id, 30);
   assert.equal(await db.adminLookupByTelegramID(999), null);
   assert.equal(await db.adminLookupByNumber("+9990000000000"), null);
+});
+
+test("startup migrations apply once, record checksums, and skip applied files", async () => {
+  if (!db) return;
+  const first = await applyMigrations(db.connectionString);
+  assert.ok(first.includes("007-support-tickets-extended.sql"));
+  assert.equal(first.length, 7, "every migration runs once on a fresh schema");
+  const ledger = await db.pool.query("SELECT version, checksum FROM schema_migrations ORDER BY version");
+  assert.equal(ledger.rowCount, 7, "every applied migration is recorded in the ledger");
+  assert.match(ledger.rows[0].checksum, /^[0-9a-f]{64}$/);
+  const second = await applyMigrations(db.connectionString);
+  assert.deepEqual(second, [], "already-applied migrations are skipped on later boots");
+  await db.pool.query("UPDATE schema_migrations SET checksum = $1 WHERE version = $2", ["deadbeef", "001-number-retirement.sql"]);
+  await assert.rejects(() => applyMigrations(db.connectionString), /already applied but its SQL changed/);
+  const rating = await db.pool.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'support_ratings' AND column_name = 'rating'`);
+  assert.equal(rating.rowCount, 1);
+  const answeredBy = await db.pool.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'support_messages' AND column_name = 'answered_by'`);
+  assert.equal(answeredBy.rowCount, 1);
 });

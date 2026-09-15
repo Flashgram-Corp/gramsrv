@@ -33,7 +33,7 @@ function botMode() {
   return raw;
 }
 
-function databaseURL() {
+export function databaseURL() {
   const configured = (process.env.DATABASE_URL ?? "").trim();
   if (configured) return configured;
 
