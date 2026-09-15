@@ -2069,18 +2069,19 @@ func (s *server) handleDeleteHistoryAPI(w http.ResponseWriter, r *http.Request) 
 }
 
 type importStarGiftAPIRequest struct {
-	CommandID    string `json:"command_id"`
-	Reason       string `json:"reason"`
-	Confirm      bool   `json:"confirm"`
-	GiftID       int64  `json:"gift_id,string"`
-	Title        string `json:"title"`
-	Limited      bool   `json:"limited,omitempty"`
+	CommandID     string `json:"command_id"`
+	Reason        string `json:"reason"`
+	Confirm       bool   `json:"confirm"`
+	GiftID        int64  `json:"gift_id,string"`
+	Title         string `json:"title"`
+	Limited       bool   `json:"limited,omitempty"`
 	RequirePremium bool `json:"require_premium,omitempty"`
-	Stars        int64  `json:"stars,string"`
-	ConvertStars int64  `json:"convert_stars,string"`
-	Enabled      bool   `json:"enabled"`
-	SortOrder    int    `json:"sort_order"`
-	SupportOnly  bool   `json:"support_only,omitempty"`
+	Stars         int64  `json:"stars,string"`
+	ConvertStars  int64  `json:"convert_stars,string"`
+	Enabled       bool   `json:"enabled"`
+	SortOrder     int    `json:"sort_order"`
+	SupportOnly   bool   `json:"support_only,omitempty"`
+	ReleasedBy    string `json:"released_by_peer"`
 
 	// Optional lifecycle authoring for the auction panel and the scheduled
 	// release ("отложенный дроп"). Zero values describe an ordinary gift; the
@@ -2133,6 +2134,7 @@ func (s *server) handleImportStarGiftAPI(w http.ResponseWriter, r *http.Request)
 		Enabled:      body.Enabled,
 		SupportOnly:  body.SupportOnly,
 		SortOrder:    body.SortOrder,
+		ReleasedBy:   body.ReleasedBy,
 		FileName:     header.Filename,
 
 		Auction:              body.Auction,
@@ -2166,6 +2168,7 @@ type importOfficialStarGiftAPIRequest struct {
 	UpgradeStars       int64  `json:"upgrade_stars,string"`
 	SupplyTotal        int    `json:"supply_total"`
 	SlugPrefix         string `json:"slug_prefix"`
+	ReleasedBy         string `json:"released_by_peer"`
 	// Unix seconds at which the imported gift becomes purchasable. Zero keeps the
 	// snapshot's own release time.
 	LockedUntilDate int `json:"locked_until_date"`
@@ -2188,6 +2191,7 @@ func (s *server) handleImportOfficialStarGiftAPI(w http.ResponseWriter, r *http.
 		SupportOnly: body.SupportOnly,
 		IncludeCollectible: body.IncludeCollectible, UpgradeStars: body.UpgradeStars,
 		SupplyTotal: body.SupplyTotal, SlugPrefix: body.SlugPrefix,
+		ReleasedBy: body.ReleasedBy,
 		LockedUntilDate: body.LockedUntilDate,
 	}
 	result, err := s.callAdminAPI(r.Context(), "/v1/official-gifts/import", req)

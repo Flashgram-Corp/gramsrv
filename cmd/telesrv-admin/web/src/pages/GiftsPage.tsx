@@ -122,6 +122,7 @@ export function GiftsPage() {
   const [supportOnly, setSupportOnly] = useState(false);
   const [premium, setPremium] = useState(false);
   const [limit, setLimit] = useState("0");
+  const [releasedBy, setReleasedBy] = useState("");
   const [reason, setReason] = useState("");
   const [preview, setPreview] = useState<CommandResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -228,6 +229,7 @@ export function GiftsPage() {
       support_only: supportOnly,
       require_premium: premium,
       availability_total: Number(limit),
+      released_by_peer: releasedBy.trim(),
       sort_order: Number(sortOrder),
       ...lifecyclePayload()
     }));
@@ -252,6 +254,7 @@ return {
 		stars, convert_stars: convertStars, enabled, support_only: supportOnly,
 		require_premium: premium,
 		availability_total: Number(limit),
+		released_by_peer: releasedBy.trim(),
 		sort_order: Number(sortOrder),
 		include_collectible: includeCollectible, upgrade_stars: upgradeStars,
 		supply_total: includeCollectible ? Number(supplyTotal) : 0, slug_prefix: slugPrefix.trim().toLowerCase(),
@@ -297,14 +300,14 @@ return {
 
   function startImport() {
 	setGiftID("0"); setTitle(""); setStars("50"); setConvertStars("50"); setSortOrder("0");
-    setEnabled(true); setSupportOnly(false); setPremium(false); setLimit("0"); setReason(""); setFile(null); setPreview(null); setImportError("");
+    setEnabled(true); setSupportOnly(false); setPremium(false); setLimit("0"); setReleasedBy(""); setReason(""); setFile(null); setPreview(null); setImportError("");
     setImportSource("official"); setSourceGiftID(""); setOfficialQuery(""); setOfficialCategory("all"); setImportOpen(true);
   }
 
   function startRevision(gift: StarGiftRow) {
     setGiftID(gift.GiftID); setTitle(gift.Title); setStars(String(gift.Stars));
     setConvertStars(String(gift.ConvertStars)); setSortOrder(String(gift.SortOrder)); setEnabled(gift.Enabled);
-    setLimit("0"); setPremium(false);
+    setLimit("0"); setReleasedBy(""); setPremium(false);
     setReason(""); setFile(null); setPreview(null); setImportError("");
     setImportSource("official"); setSourceGiftID(""); setOfficialQuery(""); setOfficialCategory("all"); setImportOpen(true);
   }
@@ -434,6 +437,7 @@ return {
                 <label><span>{t("gifts.convertStars")}</span><input type="number" min="0" value={convertStars} onChange={(e) => { setConvertStars(e.target.value); setPreview(null); }} /></label>
                 <label><span>{t("gifts.sortOrder")}</span><input type="number" value={sortOrder} onChange={(e) => { setSortOrder(e.target.value); setPreview(null); }} /></label>
                 <label><span>{t("gifts.limit")}</span><input type="number" min="0" value={limit} onChange={(e) => { setLimit(e.target.value); setPreview(null); }} /></label>
+                <label><span>{t("gifts.releasedBy")}</span><input value={releasedBy} placeholder="@durov" maxLength={128} onChange={(e) => { setReleasedBy(e.target.value); setPreview(null); }} /></label>
               </div>
               <label className="gift-switch"><input type="checkbox" checked={premium} onChange={(e) => { setPremium(e.target.checked); setPreview(null); }} /><span className="gift-switch-track" aria-hidden="true"><span /></span><span>{t("gifts.premium")}</span></label>
               {importSource === "file" ? <section className="gift-lifecycle">

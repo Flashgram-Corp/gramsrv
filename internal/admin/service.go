@@ -241,8 +241,13 @@ type AccountService interface {
 // projection. The grammystore bot uses it to discover an existing account's
 // numeric ID from the phone the user already bound to the bot, so the operator
 // flagging "fetch my ID" never needs to type it by hand.
+//
+// ByUsername backs the "Released by" field of an imported star gift: the
+// operator authoring a gift can name the releasing peer as @username instead
+// of typing its numeric ID. Both lookups run without viewer projection.
 type UserLookup interface {
 	ByPhone(ctx context.Context, phone string) (domain.User, bool, error)
+	ByUsername(ctx context.Context, username string) (domain.User, bool, error)
 }
 
 type StarsService interface {
@@ -793,6 +798,11 @@ type ImportStarGiftRequest struct {
 	ContentSHA   string `json:"content_sha256"`
 	Data         []byte `json:"-"`
 
+	// ReleasedBy names the peer that originally released the gift, authored as
+	// "@username" or a numeric user ID. Empty keeps the revision without a
+	// released_by owner. Resolved to a user peer before the catalog write.
+	ReleasedBy string `json:"released_by_peer,omitempty"`
+
 	// Optional lifecycle authoring for the auction panel and scheduled-release
 	// ("отложенный дроп") surfaces. Zero values describe an ordinary gift.
 	// Validated by domain.StarGiftCatalogWrite.ValidateLifecycleAuthoring.
@@ -824,6 +834,9 @@ type ImportOfficialStarGiftRequest struct {
 	UpgradeStars       int64  `json:"upgrade_stars,omitempty"`
 	SupplyTotal        int    `json:"supply_total,omitempty"`
 	SlugPrefix         string `json:"slug_prefix,omitempty"`
+	// ReleasedBy names the peer that originally released the imported gift,
+	// authored as "@username" or a numeric user ID.
+	ReleasedBy string `json:"released_by_peer,omitempty"`
 	// LockedUntilDate schedules the local release of an imported official gift.
 	// Zero keeps whatever release time the snapshot carries. Validated in
 	// ImportOfficialStarGift, which requires a future timestamp.
@@ -3571,6 +3584,36 @@ func (s *Service) DeletePrivateHistory(ctx context.Context, req DeletePrivateHis
 	})
 }
 
+// resolveReleasedBy parses the operator-authored "Released by" value of an
+// imported star gift into a user peer. The empty string keeps a zero peer (no
+// released_by owner); "@username" is resolved through the user lookup; any bare
+// integer is interpreted as a numeric user ID.
+func (s *Service) resolveReleasedBy(ctx context.Context, raw string) (domain.Peer, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return domain.Peer{}, nil
+	}
+	if strings.HasPrefix(raw, "@") {
+		username := strings.TrimPrefix(raw, "@")
+		if s.userLookup == nil {
+			return domain.Peer{}, fmt.Errorf("released by username resolution is not configured")
+		}
+		user, found, err := s.userLookup.ByUsername(ctx, username)
+		if err != nil {
+			return domain.Peer{}, fmt.Errorf("resolve released by username %q: %w", username, err)
+		}
+		if !found {
+			return domain.Peer{}, fmt.Errorf("released by username %q not found", username)
+		}
+		return domain.Peer{Type: domain.PeerTypeUser, ID: user.ID}, nil
+	}
+	userID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || userID <= 0 {
+		return domain.Peer{}, fmt.Errorf("%w: released by must be @username or a numeric user id", domain.ErrStarGiftInvalid)
+	}
+	return domain.Peer{Type: domain.PeerTypeUser, ID: userID}, nil
+}
+
 func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest) (CommandResult, error) {
 	if s == nil || s.gifts == nil {
 		return CommandResult{}, fmt.Errorf("star gift service is not configured")
@@ -3604,6 +3647,10 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 		return CommandResult{}, err
 	}
 	req.ContentSHA = hex.EncodeToString(animation.SHA256)
+	releasedBy, err := s.resolveReleasedBy(ctx, req.ReleasedBy)
+	if err != nil {
+		return CommandResult{}, err
+	}
 	return s.runCommand(ctx, req.CommandMeta, ActionImportStarGift, 0, domain.Peer{}, req, func() (CommandResult, error) {
 		details := map[string]any{
 			"gift_id": strconv.FormatInt(req.GiftID, 10), "title": strings.TrimSpace(req.Title),
@@ -3613,6 +3660,9 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 			"source_format": animation.SourceFormat, "source_name": animation.SourceName,
 			"sha256": req.ContentSHA, "width": animation.Width, "height": animation.Height,
 			"frame_rate": animation.FrameRate, "compressed_bytes": len(animation.TGS), "json_bytes": len(animation.JSON),
+		}
+		if releasedBy.Type != "" {
+			details["released_by"] = releasedBy
 		}
 		if lifecycle.Limited {
 			details["limited"] = lifecycle.Limited
@@ -3629,19 +3679,20 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 		if lifecycle.LockedUntilDate > 0 {
 			details["locked_until_date"] = lifecycle.LockedUntilDate
 		}
-		if req.DryRun {
-			return CommandResult{Message: "star gift import validated", Details: details}, nil
-		}
-		entry, err := s.gifts.CreateCatalogRevision(ctx, domain.StarGiftCatalogWrite{
-			GiftID: req.GiftID, Title: req.Title, Stars: req.Stars, ConvertStars: req.ConvertStars,
-			Enabled: req.Enabled, SortOrder: req.SortOrder, SupportOnly: req.SupportOnly, Animation: animation,
-			RequirePremium: req.RequirePremium,
-			Actor: req.Actor, CommandID: req.CommandID,
-			Auction: lifecycle.Auction, AuctionSlug: lifecycle.AuctionSlug, GiftsPerRound: lifecycle.GiftsPerRound,
-			AuctionStartDate: lifecycle.AuctionStartDate, AuctionRoundDuration: lifecycle.AuctionRoundDuration,
-			AvailabilityTotal: lifecycle.AvailabilityTotal, LockedUntilDate: lifecycle.LockedUntilDate,
-			Limited: lifecycle.Limited, AvailabilityRemains: lifecycle.AvailabilityRemains,
-		})
+if req.DryRun {
+		return CommandResult{Message: "star gift import validated", Details: details}, nil
+	}
+	entry, err := s.gifts.CreateCatalogRevision(ctx, domain.StarGiftCatalogWrite{
+		GiftID: req.GiftID, Title: req.Title, Stars: req.Stars, ConvertStars: req.ConvertStars,
+		Enabled: req.Enabled, SortOrder: req.SortOrder, SupportOnly: req.SupportOnly, Animation: animation,
+		RequirePremium: req.RequirePremium,
+		Actor: req.Actor, CommandID: req.CommandID,
+		Auction: lifecycle.Auction, AuctionSlug: lifecycle.AuctionSlug, GiftsPerRound: lifecycle.GiftsPerRound,
+		AuctionStartDate: lifecycle.AuctionStartDate, AuctionRoundDuration: lifecycle.AuctionRoundDuration,
+		AvailabilityTotal: lifecycle.AvailabilityTotal, LockedUntilDate: lifecycle.LockedUntilDate,
+		Limited: lifecycle.Limited, AvailabilityRemains: lifecycle.AvailabilityRemains,
+		ReleasedBy: releasedBy,
+	})
 		if err != nil {
 			return CommandResult{Details: details}, err
 		}
@@ -3868,6 +3919,9 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 	// contract for operator input, and a snapshot legitimately carries a
 	// locked_until_date that has already elapsed.
 	write.Catalog.NormalizeLifecycleAuthoring(int(s.now().Unix()))
+	if write.Catalog.ReleasedBy, err = s.resolveReleasedBy(ctx, req.ReleasedBy); err != nil {
+		return CommandResult{}, err
+	}
 	return s.runCommand(ctx, req.CommandMeta, ActionImportOfficialStarGift, 0, domain.Peer{}, req, func() (CommandResult, error) {
 		details := map[string]any{"source_gift_id": req.SourceGiftID, "gift_id": strconv.FormatInt(req.GiftID, 10),
 			"manifest_sha256": req.ManifestSHA256, "title": req.Title, "stars": strconv.FormatInt(req.Stars, 10),
@@ -3880,6 +3934,9 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 			"official_availability_remains": bundle.Gift.AvailabilityRemains,
 			"official_availability_total":   bundle.Gift.AvailabilityTotal,
 			"official_availability_resale":  bundle.Gift.AvailabilityResale,
+		}
+		if write.Catalog.ReleasedBy.Type != "" {
+			details["released_by"] = write.Catalog.ReleasedBy
 		}
 		if lockedUntilDate > 0 {
 			details["locked_until_date"] = lockedUntilDate

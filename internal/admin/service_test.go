@@ -1361,6 +1361,66 @@ func TestCommandIDConflictRejectsDifferentGiftBytes(t *testing.T) {
 	}
 }
 
+func TestImportStarGiftReleasedByUsernameAndNumericID(t *testing.T) {
+	gifts := &fakeGiftsService{}
+	lookup := &fakeUserLookup{users: []domain.User{{ID: 1_780_243_207, Username: "durov"}}}
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, UserLookup: lookup, Now: fixedNow})
+	base := ImportStarGiftRequest{
+		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3,
+		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
+		ReleasedBy: "@durov",
+	}
+	base.CommandMeta = CommandMeta{CommandID: "rb-user", Actor: "ops", Reason: "catalog", DryRun: false}
+	result, err := svc.ImportStarGift(context.Background(), base)
+	if err != nil || gifts.createCalls != 1 {
+		t.Fatalf("result=%+v err=%v create=%d", result, err, gifts.createCalls)
+	}
+	if got := gifts.lastWrite.ReleasedBy; got != (domain.Peer{Type: domain.PeerTypeUser, ID: 1_780_243_207}) {
+		t.Fatalf("ReleasedBy=%+v, want resolved user peer", got)
+	}
+	if result.Details["released_by"] == nil {
+		t.Fatalf("details missing released_by: %+v", result.Details)
+	}
+
+	gifts.createCalls = 0
+	base.CommandMeta = CommandMeta{CommandID: "rb-num", Actor: "ops", Reason: "catalog", DryRun: false}
+	base.ReleasedBy = "42"
+	if _, err := svc.ImportStarGift(context.Background(), base); err != nil {
+		t.Fatalf("numeric released by err=%v", err)
+	}
+	if got := gifts.lastWrite.ReleasedBy; got != (domain.Peer{Type: domain.PeerTypeUser, ID: 42}) {
+		t.Fatalf("numeric ReleasedBy=%+v, want user peer 42", got)
+	}
+
+	gifts.createCalls = 0
+	base.CommandMeta = CommandMeta{CommandID: "rb-empty", Actor: "ops", Reason: "catalog", DryRun: false}
+	base.ReleasedBy = ""
+	if _, err := svc.ImportStarGift(context.Background(), base); err != nil {
+		t.Fatalf("empty released by err=%v", err)
+	}
+	if gifts.lastWrite.ReleasedBy != (domain.Peer{}) {
+		t.Fatalf("empty ReleasedBy=%+v, want zero peer", gifts.lastWrite.ReleasedBy)
+	}
+}
+
+func TestImportStarGiftReleasedByRejectsUnknownUsername(t *testing.T) {
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: &fakeGiftsService{}, UserLookup: &fakeUserLookup{}, Now: fixedNow})
+	req := ImportStarGiftRequest{
+		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3,
+		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
+		ReleasedBy: "@ghost",
+	}
+	req.CommandMeta = CommandMeta{CommandID: "rb-missing", Actor: "ops", Reason: "catalog", DryRun: true}
+	if _, err := svc.ImportStarGift(context.Background(), req); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("err=%v, want username-not-found", err)
+	}
+	req.CommandMeta = CommandMeta{CommandID: "rb-garbage", Actor: "ops", Reason: "catalog", DryRun: true}
+	req.ReleasedBy = "not-a-peer"
+	if _, err := svc.ImportStarGift(context.Background(), req); err == nil || !strings.Contains(err.Error(), "released by must be") {
+		t.Fatalf("err=%v, want peer-format error", err)
+	}
+}
+
 func TestPublishStarGiftCollectiblesDryRunThenConfirm(t *testing.T) {
 	gifts := &fakeGiftsService{}
 	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, Now: fixedNow})
@@ -2380,6 +2440,16 @@ type fakeUserLookup struct{ users []domain.User }
 func (f *fakeUserLookup) ByPhone(_ context.Context, phone string) (domain.User, bool, error) {
 	for _, u := range f.users {
 		if u.Phone == phone {
+			return u, true, nil
+		}
+	}
+	return domain.User{}, false, nil
+}
+
+func (f *fakeUserLookup) ByUsername(_ context.Context, username string) (domain.User, bool, error) {
+	username = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(username, "@")))
+	for _, u := range f.users {
+		if strings.ToLower(strings.TrimPrefix(u.Username, "@")) == username {
 			return u, true, nil
 		}
 	}
