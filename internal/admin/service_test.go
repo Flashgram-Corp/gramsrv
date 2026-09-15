@@ -1324,6 +1324,7 @@ func TestImportStarGiftDryRunThenConfirm(t *testing.T) {
 	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, Now: fixedNow})
 	base := ImportStarGiftRequest{
 		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3, SupportOnly: true,
+		RequirePremium: true,
 		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
 	}
 	base.CommandMeta = CommandMeta{CommandID: "dry-gift", Actor: "ops", Reason: "catalog", DryRun: true}
@@ -1338,6 +1339,9 @@ func TestImportStarGiftDryRunThenConfirm(t *testing.T) {
 	}
 	if !gifts.lastWrite.SupportOnly {
 		t.Fatalf("imported gift SupportOnly=%v, want true", gifts.lastWrite.SupportOnly)
+	}
+	if !gifts.lastWrite.RequirePremium {
+		t.Fatalf("imported gift RequirePremium=%v, want true", gifts.lastWrite.RequirePremium)
 	}
 }
 
@@ -1519,7 +1523,7 @@ func TestImportOfficialStarGiftAvailabilityLimitSeedsBaseSupply(t *testing.T) {
 	}}
 	gifts := &fakeGiftsService{}
 	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, OfficialGifts: source, Now: fixedNow})
-	req := ImportOfficialStarGiftRequest{SourceGiftID: "5170145012310081615", Enabled: true, IncludeCollectible: true, AvailabilityTotal: 10, SupplyTotal: 10}
+	req := ImportOfficialStarGiftRequest{SourceGiftID: "5170145012310081615", Enabled: true, IncludeCollectible: true, AvailabilityTotal: 10, SupplyTotal: 10, RequirePremium: true}
 	req.CommandMeta = CommandMeta{CommandID: "exec-official-limited", Actor: "ops", Reason: "official snapshot", DryRun: false}
 	result, err := svc.ImportOfficialStarGift(context.Background(), req)
 	if err != nil || gifts.createCalls != 1 {
@@ -1528,6 +1532,9 @@ func TestImportOfficialStarGiftAvailabilityLimitSeedsBaseSupply(t *testing.T) {
 	catalog := gifts.lastBundle.Catalog
 	if !catalog.Limited || catalog.AvailabilityTotal != 10 || catalog.AvailabilityRemains != 10 || catalog.AvailabilityResale != 0 {
 		t.Fatalf("gift limit did not seed base supply: %+v", catalog)
+	}
+	if !catalog.RequirePremium {
+		t.Fatalf("require_premium was not applied: %+v", catalog)
 	}
 	if gifts.lastBundle.Collectible == nil || gifts.lastBundle.Collectible.SupplyTotal != 10 {
 		t.Fatalf("collectible pool supply not seeded: %+v", gifts.lastBundle.Collectible)
