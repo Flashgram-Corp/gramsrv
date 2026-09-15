@@ -40,6 +40,16 @@ func (r *Router) onUpdatesGetChannelDifference(ctx context.Context, req *tg.Upda
 		Force:     req.Force,
 	})
 	if err != nil {
+		// 客户端断开/请求超时会让上下文取消，pgx 把它原样带回。此时响应已无人
+		// 接收，按取消处理而不是伪装成 500 INTERNAL_SERVER_ERROR。
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			r.log.Debug("channel difference aborted by canceled request",
+				zap.Int64("viewer_user_id", userID),
+				zap.Int64("channel_id", channelID),
+				zap.Int("request_pts", req.Pts),
+				zap.Error(err))
+			return nil, err
+		}
 		if errors.Is(err, domain.ErrPersistentTimestamp) {
 			r.log.Debug("channel difference cursor rejected",
 				zap.Int64("viewer_user_id", userID),

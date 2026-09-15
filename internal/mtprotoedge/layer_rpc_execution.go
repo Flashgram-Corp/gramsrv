@@ -311,6 +311,13 @@ func (s *Server) handleAdmittedLayerRPC(
 				ErrorCode: rpcErr.Code, ErrorMessage: rpcErr.Message,
 			}, nil)
 		}
+		// A store failure wrapped as a context cancellation means the client
+		// went away mid-request (or its deadline fired); there is nobody left
+		// to receive a crafted 500. Treat it like the ctx.Err() path above.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			s.log.Debug("RPC canceled", append(fields, zap.Error(err))...)
+			return err
+		}
 		s.log.Info("RPC internal error", append(fields, zap.Error(err))...)
 		return s.publishAdmittedLayerRPCResult(c, msgID, effectiveMethod, owner, businessSucceeded, &mt.RPCError{
 			ErrorCode: 500, ErrorMessage: "INTERNAL",
