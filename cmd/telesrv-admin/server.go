@@ -2076,6 +2076,7 @@ type importStarGiftAPIRequest struct {
 	Title         string `json:"title"`
 	Limited       bool   `json:"limited,omitempty"`
 	RequirePremium bool `json:"require_premium,omitempty"`
+	Birthday      bool   `json:"birthday,omitempty"`
 	Stars         int64  `json:"stars,string"`
 	ConvertStars  int64  `json:"convert_stars,string"`
 	Enabled       bool   `json:"enabled"`
@@ -2129,6 +2130,7 @@ func (s *server) handleImportStarGiftAPI(w http.ResponseWriter, r *http.Request)
 		Title:        body.Title,
 		Limited:      body.Limited,
 		RequirePremium: body.RequirePremium,
+		Birthday:     body.Birthday,
 		Stars:        body.Stars,
 		ConvertStars: body.ConvertStars,
 		Enabled:      body.Enabled,
@@ -2158,6 +2160,7 @@ type importOfficialStarGiftAPIRequest struct {
 	Title              string `json:"title"`
 	Limited            bool   `json:"limited,omitempty"`
 	RequirePremium     bool   `json:"require_premium,omitempty"`
+	Birthday           bool   `json:"birthday,omitempty"`
 	AvailabilityTotal  int    `json:"availability_total"`
 	Stars              int64  `json:"stars,string"`
 	ConvertStars       int64  `json:"convert_stars,string"`
@@ -2186,7 +2189,7 @@ func (s *server) handleImportOfficialStarGiftAPI(w http.ResponseWriter, r *http.
 	req := admin.ImportOfficialStarGiftRequest{
 		CommandMeta:  s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "import-official-gift"),
 		SourceGiftID: body.SourceGiftID, GiftID: body.GiftID, Title: body.Title,
-		Limited: body.Limited, RequirePremium: body.RequirePremium, AvailabilityTotal: body.AvailabilityTotal,
+		Limited: body.Limited, RequirePremium: body.RequirePremium, Birthday: body.Birthday, AvailabilityTotal: body.AvailabilityTotal,
 		Stars: body.Stars, ConvertStars: body.ConvertStars, Enabled: body.Enabled, SortOrder: body.SortOrder,
 		SupportOnly: body.SupportOnly,
 		IncludeCollectible: body.IncludeCollectible, UpgradeStars: body.UpgradeStars,

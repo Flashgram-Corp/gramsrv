@@ -789,6 +789,7 @@ type ImportStarGiftRequest struct {
 	Title        string `json:"title"`
 	Limited      bool   `json:"limited,omitempty"`
 	RequirePremium bool `json:"require_premium,omitempty"`
+	Birthday     bool   `json:"birthday,omitempty"`
 	Stars        int64  `json:"stars"`
 	ConvertStars int64  `json:"convert_stars"`
 	Enabled      bool   `json:"enabled"`
@@ -824,6 +825,7 @@ type ImportOfficialStarGiftRequest struct {
 	Title              string `json:"title"`
 	Limited            bool   `json:"limited,omitempty"`
 	RequirePremium     bool   `json:"require_premium,omitempty"`
+	Birthday           bool   `json:"birthday,omitempty"`
 	AvailabilityTotal  int    `json:"availability_total,omitempty"`
 	Stars              int64  `json:"stars"`
 	ConvertStars       int64  `json:"convert_stars"`
@@ -3656,7 +3658,7 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 			"gift_id": strconv.FormatInt(req.GiftID, 10), "title": strings.TrimSpace(req.Title),
 			"stars": strconv.FormatInt(req.Stars, 10), "convert_stars": strconv.FormatInt(req.ConvertStars, 10),
 			"enabled": req.Enabled, "sort_order": req.SortOrder, "support_only": req.SupportOnly,
-			"require_premium": req.RequirePremium,
+			"require_premium": req.RequirePremium, "birthday": req.Birthday,
 			"source_format": animation.SourceFormat, "source_name": animation.SourceName,
 			"sha256": req.ContentSHA, "width": animation.Width, "height": animation.Height,
 			"frame_rate": animation.FrameRate, "compressed_bytes": len(animation.TGS), "json_bytes": len(animation.JSON),
@@ -3686,6 +3688,7 @@ if req.DryRun {
 		GiftID: req.GiftID, Title: req.Title, Stars: req.Stars, ConvertStars: req.ConvertStars,
 		Enabled: req.Enabled, SortOrder: req.SortOrder, SupportOnly: req.SupportOnly, Animation: animation,
 		RequirePremium: req.RequirePremium,
+		Birthday: req.Birthday,
 		Actor: req.Actor, CommandID: req.CommandID,
 		Auction: lifecycle.Auction, AuctionSlug: lifecycle.AuctionSlug, GiftsPerRound: lifecycle.GiftsPerRound,
 		AuctionStartDate: lifecycle.AuctionStartDate, AuctionRoundDuration: lifecycle.AuctionRoundDuration,
@@ -3901,7 +3904,7 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 		// regular official imports as a fresh, locally purchasable catalog entry.
 		// Base supply is selected above; resale counters and sale dates come from
 		// local lifecycle writes. Existing inventory is preserved under the store lock.
-		Limited: limited, SoldOut: false, Birthday: bundle.Gift.Birthday,
+		Limited: limited, SoldOut: false, Birthday: req.Birthday || bundle.Gift.Birthday,
 		RequirePremium: req.RequirePremium || bundle.Gift.RequirePremium, LimitedPerUser: bundle.Gift.LimitedPerUser,
 		SupportOnly: req.SupportOnly,
 		PeerColorAvailable: bundle.Gift.PeerColorAvailable, Auction: bundle.Gift.Auction,

@@ -1324,7 +1324,7 @@ func TestImportStarGiftDryRunThenConfirm(t *testing.T) {
 	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, Now: fixedNow})
 	base := ImportStarGiftRequest{
 		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3, SupportOnly: true,
-		RequirePremium: true,
+		RequirePremium: true, Birthday: true,
 		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
 	}
 	base.CommandMeta = CommandMeta{CommandID: "dry-gift", Actor: "ops", Reason: "catalog", DryRun: true}
@@ -1342,6 +1342,9 @@ func TestImportStarGiftDryRunThenConfirm(t *testing.T) {
 	}
 	if !gifts.lastWrite.RequirePremium {
 		t.Fatalf("imported gift RequirePremium=%v, want true", gifts.lastWrite.RequirePremium)
+	}
+	if !gifts.lastWrite.Birthday {
+		t.Fatalf("imported gift Birthday=%v, want true", gifts.lastWrite.Birthday)
 	}
 }
 
