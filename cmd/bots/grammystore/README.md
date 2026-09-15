@@ -178,6 +178,9 @@ who already owns a `+888` sees "Buy a new number" and pays a repeat-purchase
 discount, set by the owner as `number_discount_percent` via the prices panel
 (effective price `max(1, round(base × (100 − discount) / 100))`). Number purchases
 atomically record the allocation, sale and completed payment.
+Free-number re-rolls are capped per UTC day by the admin-set setting
+`free_number_daily_limit` (0 = unlimited), applied with the `free N` command from
+the prices panel; the counter resets on a fresh day.
 For a stored number payment interrupted by a database/process failure, an owner
 can use `/retry_payment <charge_id>` without charging the customer again.
 Before refunding a number, change away from it in the client and wait for issued
@@ -188,8 +191,9 @@ See [number lifecycle and verification invariants](NUMBER_LIFECYCLE.md).
 Existing PostgreSQL deployments must apply `db/migrations/001-number-retirement.sql`,
 `db/migrations/002-refund-provider-charge.sql`,
 `db/migrations/003-users-server-user-id-unique.sql`,
-`db/migrations/004-number-offers.sql` and
-`db/migrations/005-drop-number-offers.sql`
+`db/migrations/004-number-offers.sql`,
+`db/migrations/005-drop-number-offers.sql` and
+`db/migrations/006-free-number-daily-limit.sql`
 before upgrading (fresh deployments use the updated `db/init.sql`). Back up the
 database first. The migration does not repair unsafe pre-release ownership state.
 Local images use an allowlisted build context; `.env` is provided only at runtime.

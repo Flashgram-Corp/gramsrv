@@ -52,9 +52,10 @@ export function localizeProduct(product, language = "en") {
   return { ...product, title: product.titleRu ?? product.title, description: product.descriptionRu ?? product.description };
 }
 
-export function normalizeUsername(value) {
+export function normalizeUsername(value, minLength = 5) {
+  const length = Math.max(1, Number(minLength));
   const username = String(value ?? "").trim().replace(/^@/, "").toLowerCase();
-  return /^[a-z][a-z0-9_]{4,31}$/.test(username) ? username : "";
+  return new RegExp(`^[a-z][a-z0-9_]{${length - 1},31}$`).test(username) ? username : "";
 }
 
 export function buildPayload(productCode, targetUserID = 0, extra = "", starsAmount = 0) {

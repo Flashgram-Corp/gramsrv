@@ -113,6 +113,7 @@ type Service interface {
 	AccountRating(ctx context.Context, userID int64) (domain.AccountRating, error)
 	AccountRatings(ctx context.Context, filter domain.AccountRatingFilter) ([]domain.AccountRating, error)
 	AccountRatingEvents(ctx context.Context, userID int64, limit int) ([]domain.AccountRatingEvent, error)
+	ListRecentAdminCommands(ctx context.Context, limit int, actor string) ([]domain.AdminCommand, error)
 	ClaimVerification(ctx context.Context, req admin.ClaimVerificationRequest) (admin.CommandResult, error)
 	ApproveVerification(ctx context.Context, req admin.ApproveVerificationRequest) (admin.CommandResult, error)
 	RejectVerification(ctx context.Context, req admin.RejectVerificationRequest) (admin.CommandResult, error)
@@ -299,6 +300,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /v1/collectible-phones/delete", s.authenticated(s.handleDeleteCollectiblePhone))
 	mux.HandleFunc("GET /v1/collectible-phones", s.authenticated(s.handleCollectiblePhones))
 	mux.HandleFunc("GET /v1/collectible-phones/{id}", s.authenticated(s.handleCollectiblePhone))
+	mux.HandleFunc("GET /v1/admin-commands", s.authenticated(s.handleAdminCommands))
 	mux.HandleFunc("POST /v1/account-ratings/recompute", s.authenticated(s.handleRecomputeAccountRating))
 	mux.HandleFunc("POST /v1/account-ratings/adjust", s.authenticated(s.handleAdjustAccountRating))
 	mux.HandleFunc("GET /v1/account-ratings", s.authenticated(s.handleAccountRatings))
@@ -1968,6 +1970,50 @@ func (s *Server) handleAccountRating(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleAdminCommands(w http.ResponseWriter, r *http.Request) {
+	limit, ok := optionalQueryInt(w, r.URL.Query(), "limit")
+	if !ok {
+		return
+	}
+	actor := strings.TrimSpace(r.URL.Query().Get("actor"))
+	items, err := s.svc.ListRecentAdminCommands(r.Context(), limit, actor)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	commands := make([]map[string]any, 0, len(items))
+	for _, cmd := range items {
+		commands = append(commands, adminCommandResponse(cmd))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"commands": commands})
+}
+
+func adminCommandResponse(cmd domain.AdminCommand) map[string]any {
+	out := map[string]any{
+		"command_id": cmd.CommandID,
+		"actor":      cmd.Actor,
+		"action":     cmd.Action,
+		"dry_run":    cmd.DryRun,
+		"status":     string(cmd.Status),
+	}
+	if cmd.TargetUserID != 0 {
+		out["target_user_id"] = cmd.TargetUserID
+	}
+	if cmd.Reason != "" {
+		out["reason"] = cmd.Reason
+	}
+	if cmd.Error != "" {
+		out["error"] = cmd.Error
+	}
+	if !cmd.CreatedAt.IsZero() {
+		out["created_at"] = cmd.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	if cmd.CompletedAt != nil {
+		out["completed_at"] = cmd.CompletedAt.UTC().Format(time.RFC3339)
+	}
+	return out
+}
+
 // collectibleOwnerFilter reads the optional owner filter. At most one of the two
 // identifiers may be present, mirroring the mint/transfer request shape.
 func collectibleOwnerFilter(w http.ResponseWriter, query url.Values) (domain.Peer, bool) {
@@ -2171,7 +2217,7 @@ func writeCommandResult(w http.ResponseWriter, result admin.CommandResult, err e
 	if err != nil {
 		status = http.StatusBadRequest
 		if result.CommandID == "" {
-			result = admin.CommandResult{Status: "failed", Message: "command failed", Error: err.Error()}
+			result = admin.CommandResult{Status: "failed", Message: "command failed", Error: err.Error(), Code: admin.ErrorCode(err)}
 		}
 	}
 	writeJSON(w, status, result)

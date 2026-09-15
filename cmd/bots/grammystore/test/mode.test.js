@@ -49,6 +49,8 @@ function mockDb() {
     setSetting: async () => {},
     starsRate: async () => 20,
     numberDiscountPercent: async () => 0,
+    freeNumberDailyLimit: async () => 0,
+    freeNumberDailyCount: async () => 0,
     productPrices: async () => ({}),
     setPending: async () => {},
     pending: async () => null,

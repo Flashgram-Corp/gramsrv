@@ -191,6 +191,7 @@ const (
 type CommandRepository interface {
 	BeginCommand(ctx context.Context, cmd domain.AdminCommand) (domain.AdminCommand, bool, error)
 	FinishCommand(ctx context.Context, commandID string, status domain.AdminCommandStatus, resultJSON []byte, errorText string) (domain.AdminCommand, error)
+	ListRecentCommands(ctx context.Context, limit int, actor string) ([]domain.AdminCommand, error)
 }
 
 type RestrictionStore interface {
@@ -777,6 +778,7 @@ type CommandResult struct {
 	Message         string         `json:"message"`
 	Details         map[string]any `json:"details,omitempty"`
 	Error           string         `json:"error,omitempty"`
+	Code            string         `json:"code,omitempty"`
 	// transientDetails are returned to the initiating caller only. They are
 	// deliberately excluded from JSON so credentials can never enter command
 	// replay or audit storage.
@@ -3128,11 +3130,36 @@ func accountRatingError(err error) error {
 	return err
 }
 
+// codedError / ErrorCode carry the stable admin code on the failing command
+// itself, so the journalled result and the wire response expose the same token
+// the panel switches on instead of an English string to match. The text form
+// stays "CODE: message" so logs read the code at a glance.
 func codedError(code string, err error) error {
 	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("%s: %w", code, err)
+	return &codedAdminError{code: code, err: err}
+}
+
+type codedAdminError struct {
+	code string
+	err  error
+}
+
+func (e *codedAdminError) Error() string { return e.code + ": " + e.err.Error() }
+func (e *codedAdminError) Unwrap() error { return e.err }
+func (e *codedAdminError) Code() string  { return e.code }
+
+// ErrorCode returns the stable admin code attached to err by codedError, or "".
+func ErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	var target interface{ Code() string }
+	if errors.As(err, &target) {
+		return target.Code()
+	}
+	return ""
 }
 
 func (s *Service) SetChannelVerified(ctx context.Context, req SetChannelVerifiedRequest) (CommandResult, error) {
@@ -4616,6 +4643,25 @@ func (s *Service) StarGiftCollectibleAnimation(ctx context.Context, giftID int64
 	return s.gifts.CollectibleAnimationJSON(ctx, giftID, kind, attributeID)
 }
 
+func (s *Service) ListRecentAdminCommands(ctx context.Context, limit int, actor string) ([]domain.AdminCommand, error) {
+	if s == nil || s.commands == nil {
+		return nil, fmt.Errorf("admin command store is not configured")
+	}
+	repo, ok := s.commands.(interface {
+		ListRecentCommands(ctx context.Context, limit int, actor string) ([]domain.AdminCommand, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("admin command listing is not supported")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return repo.ListRecentCommands(ctx, limit, strings.TrimSpace(actor))
+}
+
 func (s *Service) runCommand(ctx context.Context, meta CommandMeta, action string, targetUserID int64, targetPeer domain.Peer, request any, fn func() (CommandResult, error)) (CommandResult, error) {
 	if s == nil || s.commands == nil {
 		return CommandResult{}, fmt.Errorf("admin command store is not configured")
@@ -4668,6 +4714,7 @@ func (s *Service) runCommand(ctx context.Context, meta CommandMeta, action strin
 		status = domain.AdminCommandFailed
 		result.Status = string(status)
 		result.Error = opErr.Error()
+		result.Code = ErrorCode(opErr)
 		if result.Message == "" {
 			result.Message = "command failed"
 		}

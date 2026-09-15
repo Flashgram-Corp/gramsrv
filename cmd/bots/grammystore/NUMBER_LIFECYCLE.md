@@ -76,6 +76,12 @@ one purchased +888. "Buy a new number" from the numbers menu (after owning a
    server account. A phone already allocated to another owner is refused.
 4. Free +7/+1 numbers can no longer be rebought by the store; an admin bind or
    a +888 purchase replaces them instead.
+5. Re-rolling a free number is capped per UTC day by the admin-setting
+   `free_number_daily_limit` (`free N` from the prices panel, 0 = unlimited).
+   The count lives on the user row (`free_day`/`free_day_count`) and is charged
+   only when an allocation commits, so a failed re-roll does not consume an
+   allowance; a stale `free_day` resets the counter. +888 purchases and admin
+   binds are not limited.
 
 ## Persisted invariants
 

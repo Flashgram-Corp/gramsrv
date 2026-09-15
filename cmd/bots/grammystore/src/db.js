@@ -98,7 +98,9 @@ export class BotDatabase {
   }
 
   async user(id) {
-    const res = await this.pool.query("SELECT * FROM users WHERE telegram_id = $1", [id]);
+    const telegramID = Number(id);
+    if (!Number.isSafeInteger(telegramID) || telegramID <= 0) return null;
+    const res = await this.pool.query("SELECT * FROM users WHERE telegram_id = $1", [telegramID]);
     return res.rows[0] ?? null;
   }
 
@@ -174,6 +176,20 @@ export class BotDatabase {
     const current = (await client.query("SELECT * FROM numbers WHERE owner_id = $1 AND is_current = TRUE", [ownerID])).rows[0] ?? null;
     if (current && !replace) return current;
     if (current && current.format !== "free" && (!allowReplaceAnonymous || format === "free")) throw new Error("account already has an active anonymous number");
+    // Daily free-number change limit: an admin-configured count of free
+    // allocations per UTC day. The counter is user-scoped because re-rolls
+    // release the previous free number, so counting number rows would undercount.
+    let dailyFree = null;
+    if (format === "free") {
+      const limit = await this.freeNumberDailyLimit();
+      if (limit > 0) {
+        const day = dayKey();
+        const me = (await client.query("SELECT free_day, free_day_count FROM users WHERE telegram_id = $1", [ownerID])).rows[0] ?? null;
+        const count = me && me.free_day === day ? me.free_day_count : 0;
+        if (count >= limit) throw new Error("free number daily limit reached");
+        dailyFree = { day, count: count + 1 };
+      }
+    }
     if (current) {
       if (current.format !== "free") {
         // A repeat +888 purchase replaces the previous +888, which is retired
@@ -197,6 +213,12 @@ export class BotDatabase {
         [generated.phone, generated.display, format, generated.country, ownerID, chatID, now()]
       );
       if (result.rowCount) {
+        if (dailyFree) {
+          await client.query(
+            "UPDATE users SET free_day = $1, free_day_count = $2, updated_at = $3 WHERE telegram_id = $4",
+            [dailyFree.day, dailyFree.count, now(), ownerID]
+          );
+        }
         // Enforce a single active number per owner: any previously owned free
         // numbers (reserved by earlier re-rolls or the free allocation) are
         // released to the pool. Runs after the insert so failed allocations
@@ -351,6 +373,17 @@ export class BotDatabase {
   async numberDiscountPercent() {
     const value = Number(await this.getSetting("number_discount_percent", "0"));
     return Number.isSafeInteger(value) && value >= 0 ? Math.min(100, value) : 0;
+  }
+
+  async freeNumberDailyLimit() {
+    const value = Number(await this.getSetting("free_number_daily_limit", "0"));
+    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  }
+
+  async freeNumberDailyCount(ownerID) {
+    const me = (await this.pool.query("SELECT free_day, free_day_count FROM users WHERE telegram_id = $1", [ownerID])).rows[0] ?? null;
+    if (!me || me.free_day !== dayKey()) return 0;
+    return me.free_day_count;
   }
 
   async productPrices() {
@@ -732,6 +765,41 @@ export class BotDatabase {
     const numbers = await this.numbers(telegramID);
     const verified = await this.verifiedPhone(telegramID);
     return { user, numbers, verifiedPhone: verified };
+  }
+
+  async adminLookupByUsername(username) {
+    const user = await this.userByUsername(username);
+    if (!user) return null;
+    const numbers = await this.numbers(user.telegram_id);
+    const verified = await this.verifiedPhone(user.telegram_id);
+    return { user, numbers, verifiedPhone: verified };
+  }
+
+  async userByUsername(username) {
+    const normalized = String(username ?? "").trim().replace(/^@/, "").toLowerCase();
+    if (!/^[a-z0-9_]{1,32}$/.test(normalized)) return null;
+    const res = await this.pool.query("SELECT * FROM users WHERE lower(username) = $1 LIMIT 1", [normalized]);
+    return res.rows[0] ?? null;
+  }
+
+  // --- Admin recent activity (sales + refunds) ---
+
+  async adminRecentActivity(telegramID) {
+    if (!Number.isSafeInteger(Number(telegramID)) || Number(telegramID) <= 0) return { sales: [], refunds: [] };
+    const [sales, refunds] = await Promise.all([
+      this.pool.query(
+        `SELECT title, stars_price, charge_id, created_at FROM sales
+         WHERE buyer_id = $1 OR recipient_id = $1 ORDER BY id DESC LIMIT 10`,
+        [Number(telegramID)],
+      ),
+      this.pool.query(
+        `SELECT r.charge_id, r.refunded_at, r.updated_at, r.status, s.title, s.stars_price
+         FROM refunds r LEFT JOIN sales s ON s.charge_id = r.charge_id
+         WHERE r.telegram_id = $1 ORDER BY r.refunded_at DESC, r.charge_id DESC LIMIT 10`,
+        [Number(telegramID)],
+      ),
+    ]);
+    return { sales: sales.rows, refunds: refunds.rows };
   }
 }
 

@@ -17,7 +17,7 @@ test("Stars reversal debits the snapshotted grant with a deterministic key", asy
   const gramsrv = { debitStars: async (...args) => calls.push(args) };
   const sale = { charge_id: "charge-1", fulfillment: { kind: "stars", recipientID: 1001, amount: 20 } };
   await reverseSaleFulfillment(sale, db, gramsrv);
-  assert.deepEqual(calls, [[1001, 20, "Telegram bot refund", "refund:charge-1:stars"]]);
+  assert.deepEqual(calls, [[1001, 20, "Telegram bot refund", "refund:charge-1:stars", false, ""]]);
 });
 
 test("Premium reversal only revokes the entitlement created by the purchase", async () => {
@@ -26,7 +26,7 @@ test("Premium reversal only revokes the entitlement created by the purchase", as
   const gramsrv = { revokePremium: async (...args) => calls.push(args) };
   const sale = { charge_id: "charge-premium", fulfillment: { kind: "premium", recipientID: 1001, months: 3, entitlementID: 77 } };
   await reverseSaleFulfillment(sale, db, gramsrv);
-  assert.deepEqual(calls, [[1001, 77, "Telegram bot refund", "refund:charge-premium:premium"]]);
+  assert.deepEqual(calls, [[1001, 77, "Telegram bot refund", "refund:charge-premium:premium", ""]]);
 });
 
 test("legacy Premium reversal fails safe instead of clearing unrelated Premium", async () => {

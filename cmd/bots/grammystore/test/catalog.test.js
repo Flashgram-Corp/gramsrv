@@ -22,6 +22,11 @@ test("arbitrary Stars invoices are bounded and use the configured rate", () => {
 test("collectible username validation is canonical", () => {
   assert.equal(normalizeUsername(" @Valid_Name "), "valid_name");
   assert.equal(normalizeUsername("1bad"), "");
+  assert.equal(normalizeUsername("abcd"), "", "shop usernames still require 5+ characters");
+  assert.equal(normalizeUsername("abcd", 4), "abcd", "admin grants may use 4-character usernames");
+  assert.equal(normalizeUsername("abc", 4), "");
+  assert.equal(normalizeUsername("4abc", 4), "");
+  assert.equal(normalizeUsername("@A1b2_C3d4", 4), "a1b2_c3d4");
 });
 
 test("fixed and dynamic products expose both supported locales", () => {

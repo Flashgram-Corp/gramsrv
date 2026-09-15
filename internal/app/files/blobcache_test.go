@@ -209,12 +209,11 @@ func TestGetFileSingleflightSharesImmutableRangeBacking(t *testing.T) {
 	results := make(chan domain.FileChunk, callers)
 	errs := make(chan error, callers)
 	start := make(chan struct{})
-	var started sync.WaitGroup
-	started.Add(callers)
+	arrived := make(chan struct{}, callers)
 	for range callers {
 		go func() {
 			<-start
-			started.Done()
+			arrived <- struct{}{}
 			chunk, found, err := svc.GetFile(ctx, domain.FileDownloadRequest{LocationKey: "doc:shared-range", Offset: 17, Limit: 128 << 10})
 			if err == nil && !found {
 				err = context.Canceled
@@ -226,15 +225,17 @@ func TestGetFileSingleflightSharesImmutableRangeBacking(t *testing.T) {
 			results <- chunk
 		}()
 	}
-	// Launch all callers simultaneously, then wait for every caller to have
-	// entered GetFile while the first (leader) is confirmed blocked inside its
-	// singleflight range read. Releasing before all callers are in-flight could
-	// let a straggler start a second singleflight generation and observe its own
-	// backing (a false negative), so we settle before unblocking the leader.
+	// Launch all callers, then wait for every caller to have been scheduled
+	// into GetFile. The leader is confirmed blocked inside its singleflight
+	// range read; releasing before every caller reaches the shared flight could
+	// let a straggler start a second singleflight generation and observe its
+	// own backing (a false negative), so we settle before unblocking the leader.
 	close(start)
-	started.Wait()
+	for i := 0; i < callers; i++ {
+		<-arrived
+	}
 	<-backend.entered
-	for i := 0; i < 64; i++ {
+	for i := 0; i < 1024; i++ {
 		runtime.Gosched()
 	}
 	close(backend.release)
