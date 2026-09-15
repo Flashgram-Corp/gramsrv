@@ -241,8 +241,13 @@ type AccountService interface {
 // projection. The grammystore bot uses it to discover an existing account's
 // numeric ID from the phone the user already bound to the bot, so the operator
 // flagging "fetch my ID" never needs to type it by hand.
+//
+// ByUsername backs the "Released by" field of an imported star gift: the
+// operator authoring a gift can name the releasing peer as @username instead
+// of typing its numeric ID. Both lookups run without viewer projection.
 type UserLookup interface {
 	ByPhone(ctx context.Context, phone string) (domain.User, bool, error)
+	ByUsername(ctx context.Context, username string) (domain.User, bool, error)
 }
 
 type StarsService interface {
@@ -782,6 +787,9 @@ type ImportStarGiftRequest struct {
 	CommandMeta
 	GiftID       int64  `json:"gift_id,omitempty"`
 	Title        string `json:"title"`
+	Limited      bool   `json:"limited,omitempty"`
+	RequirePremium bool `json:"require_premium,omitempty"`
+	Birthday     bool   `json:"birthday,omitempty"`
 	Stars        int64  `json:"stars"`
 	ConvertStars int64  `json:"convert_stars"`
 	Enabled      bool   `json:"enabled"`
@@ -790,6 +798,15 @@ type ImportStarGiftRequest struct {
 	FileName     string `json:"file_name"`
 	ContentSHA   string `json:"content_sha256"`
 	Data         []byte `json:"-"`
+
+	// ReleasedBy names the peer that originally released the gift, authored as
+	// "@username" or a numeric user ID. Empty keeps the revision without a
+	// released_by owner. Resolved to a user peer before the catalog write.
+	ReleasedBy string `json:"released_by_peer,omitempty"`
+
+	// PerUserTotal caps how many copies of this gift a single user may purchase.
+	// Zero disables the per-user limit; a positive value enables limited_per_user.
+	PerUserTotal int `json:"per_user_total,omitempty"`
 
 	// Optional lifecycle authoring for the auction panel and scheduled-release
 	// ("отложенный дроп") surfaces. Zero values describe an ordinary gift.
@@ -810,6 +827,10 @@ type ImportOfficialStarGiftRequest struct {
 	SourceGiftID       string `json:"source_gift_id"`
 	GiftID             int64  `json:"gift_id,omitempty"`
 	Title              string `json:"title"`
+	Limited            bool   `json:"limited,omitempty"`
+	RequirePremium     bool   `json:"require_premium,omitempty"`
+	Birthday           bool   `json:"birthday,omitempty"`
+	AvailabilityTotal  int    `json:"availability_total,omitempty"`
 	Stars              int64  `json:"stars"`
 	ConvertStars       int64  `json:"convert_stars"`
 	Enabled            bool   `json:"enabled"`
@@ -819,6 +840,12 @@ type ImportOfficialStarGiftRequest struct {
 	UpgradeStars       int64  `json:"upgrade_stars,omitempty"`
 	SupplyTotal        int    `json:"supply_total,omitempty"`
 	SlugPrefix         string `json:"slug_prefix,omitempty"`
+	// ReleasedBy names the peer that originally released the imported gift,
+	// authored as "@username" or a numeric user ID.
+	ReleasedBy string `json:"released_by_peer,omitempty"`
+	// PerUserTotal overrides the snapshot's per-user cap for an imported gift.
+	// Zero keeps the snapshot value; a positive value enables limited_per_user.
+	PerUserTotal int `json:"per_user_total,omitempty"`
 	// LockedUntilDate schedules the local release of an imported official gift.
 	// Zero keeps whatever release time the snapshot carries. Validated in
 	// ImportOfficialStarGift, which requires a future timestamp.
@@ -3566,12 +3593,43 @@ func (s *Service) DeletePrivateHistory(ctx context.Context, req DeletePrivateHis
 	})
 }
 
+// resolveReleasedBy parses the operator-authored "Released by" value of an
+// imported star gift into a user peer. The empty string keeps a zero peer (no
+// released_by owner); "@username" is resolved through the user lookup; any bare
+// integer is interpreted as a numeric user ID.
+func (s *Service) resolveReleasedBy(ctx context.Context, raw string) (domain.Peer, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return domain.Peer{}, nil
+	}
+	if strings.HasPrefix(raw, "@") {
+		username := strings.TrimPrefix(raw, "@")
+		if s.userLookup == nil {
+			return domain.Peer{}, fmt.Errorf("released by username resolution is not configured")
+		}
+		user, found, err := s.userLookup.ByUsername(ctx, username)
+		if err != nil {
+			return domain.Peer{}, fmt.Errorf("resolve released by username %q: %w", username, err)
+		}
+		if !found {
+			return domain.Peer{}, fmt.Errorf("released by username %q not found", username)
+		}
+		return domain.Peer{Type: domain.PeerTypeUser, ID: user.ID}, nil
+	}
+	userID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || userID <= 0 {
+		return domain.Peer{}, fmt.Errorf("%w: released by must be @username or a numeric user id", domain.ErrStarGiftInvalid)
+	}
+	return domain.Peer{Type: domain.PeerTypeUser, ID: userID}, nil
+}
+
 func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest) (CommandResult, error) {
 	if s == nil || s.gifts == nil {
 		return CommandResult{}, fmt.Errorf("star gift service is not configured")
 	}
 	if req.GiftID < 0 || req.Stars <= 0 || req.ConvertStars < 0 || req.ConvertStars > req.Stars ||
 		req.SortOrder < math.MinInt32 || req.SortOrder > math.MaxInt32 ||
+		req.PerUserTotal < 0 ||
 		len([]rune(strings.TrimSpace(req.Title))) > domain.MaxStarGiftTitleRunes {
 		return CommandResult{}, domain.ErrStarGiftInvalid
 	}
@@ -3591,19 +3649,39 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 	// Fills in limited / availability_remains / a concrete auction_start_date,
 	// which the revision's CHECK constraints require for an auction.
 	lifecycle.NormalizeLifecycleAuthoring(now)
+	// An explicitly authored limited flag wins over the automatic derivation;
+	// the catalog enforces that finite gifts carry availability_total > 0.
+	lifecycle.Limited = req.Limited || lifecycle.Limited
 	animation, err := s.gifts.PrepareAnimation(req.FileName, req.Data)
 	if err != nil {
 		return CommandResult{}, err
 	}
 	req.ContentSHA = hex.EncodeToString(animation.SHA256)
+	releasedBy, err := s.resolveReleasedBy(ctx, req.ReleasedBy)
+	if err != nil {
+		return CommandResult{}, err
+	}
 	return s.runCommand(ctx, req.CommandMeta, ActionImportStarGift, 0, domain.Peer{}, req, func() (CommandResult, error) {
 		details := map[string]any{
 			"gift_id": strconv.FormatInt(req.GiftID, 10), "title": strings.TrimSpace(req.Title),
 			"stars": strconv.FormatInt(req.Stars, 10), "convert_stars": strconv.FormatInt(req.ConvertStars, 10),
 			"enabled": req.Enabled, "sort_order": req.SortOrder, "support_only": req.SupportOnly,
+			"require_premium": req.RequirePremium, "birthday": req.Birthday,
 			"source_format": animation.SourceFormat, "source_name": animation.SourceName,
 			"sha256": req.ContentSHA, "width": animation.Width, "height": animation.Height,
 			"frame_rate": animation.FrameRate, "compressed_bytes": len(animation.TGS), "json_bytes": len(animation.JSON),
+		}
+		if releasedBy.Type != "" {
+			details["released_by"] = releasedBy
+		}
+		if req.PerUserTotal > 0 {
+			details["limited_per_user"] = true
+			details["per_user_total"] = req.PerUserTotal
+		}
+		if lifecycle.Limited {
+			details["limited"] = lifecycle.Limited
+			details["availability_total"] = lifecycle.AvailabilityTotal
+			details["availability_remains"] = lifecycle.AvailabilityRemains
 		}
 		if lifecycle.Auction {
 			details["auction"] = true
@@ -3611,25 +3689,25 @@ func (s *Service) ImportStarGift(ctx context.Context, req ImportStarGiftRequest)
 			details["gifts_per_round"] = lifecycle.GiftsPerRound
 			details["auction_start_date"] = lifecycle.AuctionStartDate
 			details["auction_round_duration"] = lifecycle.AuctionRoundDuration
-			details["availability_total"] = lifecycle.AvailabilityTotal
-			details["limited"] = lifecycle.Limited
-			details["availability_remains"] = lifecycle.AvailabilityRemains
 		}
 		if lifecycle.LockedUntilDate > 0 {
 			details["locked_until_date"] = lifecycle.LockedUntilDate
 		}
-		if req.DryRun {
-			return CommandResult{Message: "star gift import validated", Details: details}, nil
-		}
-		entry, err := s.gifts.CreateCatalogRevision(ctx, domain.StarGiftCatalogWrite{
-			GiftID: req.GiftID, Title: req.Title, Stars: req.Stars, ConvertStars: req.ConvertStars,
-			Enabled: req.Enabled, SortOrder: req.SortOrder, SupportOnly: req.SupportOnly, Animation: animation,
-			Actor: req.Actor, CommandID: req.CommandID,
-			Auction: lifecycle.Auction, AuctionSlug: lifecycle.AuctionSlug, GiftsPerRound: lifecycle.GiftsPerRound,
-			AuctionStartDate: lifecycle.AuctionStartDate, AuctionRoundDuration: lifecycle.AuctionRoundDuration,
-			AvailabilityTotal: lifecycle.AvailabilityTotal, LockedUntilDate: lifecycle.LockedUntilDate,
-			Limited: lifecycle.Limited, AvailabilityRemains: lifecycle.AvailabilityRemains,
-		})
+if req.DryRun {
+		return CommandResult{Message: "star gift import validated", Details: details}, nil
+	}
+	entry, err := s.gifts.CreateCatalogRevision(ctx, domain.StarGiftCatalogWrite{
+		GiftID: req.GiftID, Title: req.Title, Stars: req.Stars, ConvertStars: req.ConvertStars,
+		Enabled: req.Enabled, SortOrder: req.SortOrder, SupportOnly: req.SupportOnly, Animation: animation,
+		RequirePremium: req.RequirePremium,
+		Birthday: req.Birthday,
+		Actor: req.Actor, CommandID: req.CommandID,
+		Auction: lifecycle.Auction, AuctionSlug: lifecycle.AuctionSlug, GiftsPerRound: lifecycle.GiftsPerRound,
+		AuctionStartDate: lifecycle.AuctionStartDate, AuctionRoundDuration: lifecycle.AuctionRoundDuration,
+		AvailabilityTotal: lifecycle.AvailabilityTotal, LockedUntilDate: lifecycle.LockedUntilDate,
+		Limited: lifecycle.Limited, AvailabilityRemains: lifecycle.AvailabilityRemains,
+		ReleasedBy: releasedBy, LimitedPerUser: req.PerUserTotal > 0, PerUserTotal: req.PerUserTotal,
+	})
 		if err != nil {
 			return CommandResult{Details: details}, err
 		}
@@ -3725,18 +3803,29 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 		lockedUntilDate = req.LockedUntilDate
 	}
 
-	// Auctions require finite inventory. For ordinary gifts, collectible supply
-	// limits a new base gift only when the operator imports that pool. A hidden,
-	// inactive collectible input must never cap a basic gift's sales.
+	// Auctions require finite inventory. For ordinary gifts, the base catalog is
+	// finite only when the operator sets a base limit ("Лимит подарков"): any
+	// positive value makes the base gift a limited edition of that exact size.
+	// The collectible supply ("уникальный тираж") configures the pool alone and
+	// must never turn a regular gift into a limited one.
 	limited, availabilityTotal := false, 0
 	if bundle.Gift.Auction {
-		limited, availabilityTotal = true, bundle.Gift.AvailabilityTotal
+		limited = true
+		availabilityTotal = bundle.Gift.AvailabilityTotal
 		if availabilityTotal <= 0 {
 			availabilityTotal = req.SupplyTotal
 		}
 	}
-	if req.IncludeCollectible && req.SupplyTotal > 0 && !limited {
-		limited, availabilityTotal = true, req.SupplyTotal
+	if req.AvailabilityTotal > 0 {
+		limited, availabilityTotal = true, req.AvailabilityTotal
+	}
+	// Legacy boolean alias: clients that only set the flag still produce a
+	// finite gift, seeded from the collectible supply.
+	if req.Limited && !limited {
+		limited = true
+		if availabilityTotal <= 0 {
+			availabilityTotal = req.SupplyTotal
+		}
 	}
 
 	baseAnimation, err := s.gifts.PrepareOfficialAnimation(bundle.BaseDocument.FileName, bundle.BaseDocument.Data)
@@ -3817,6 +3906,10 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 	req.ManifestSHA256 = hex.EncodeToString(bundle.ManifestSHA256)
 	sort.Strings(assetHashes)
 	req.AssetSHA256 = assetHashes
+	perUserTotal := bundle.Gift.PerUserTotal
+	if req.PerUserTotal > 0 {
+		perUserTotal = req.PerUserTotal
+	}
 	write := domain.StarGiftCatalogBundleWrite{Catalog: domain.StarGiftCatalogWrite{
 		GiftID: req.GiftID, Title: req.Title, Stars: req.Stars, ConvertStars: req.ConvertStars,
 		Enabled: req.Enabled, SortOrder: req.SortOrder, Animation: baseAnimation, Actor: req.Actor, CommandID: req.CommandID,
@@ -3827,14 +3920,14 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 		// regular official imports as a fresh, locally purchasable catalog entry.
 		// Base supply is selected above; resale counters and sale dates come from
 		// local lifecycle writes. Existing inventory is preserved under the store lock.
-		Limited: limited, SoldOut: false, Birthday: bundle.Gift.Birthday,
-		RequirePremium: bundle.Gift.RequirePremium, LimitedPerUser: bundle.Gift.LimitedPerUser,
+		Limited: limited, SoldOut: false, Birthday: req.Birthday || bundle.Gift.Birthday,
+		RequirePremium: req.RequirePremium || bundle.Gift.RequirePremium, LimitedPerUser: bundle.Gift.LimitedPerUser || req.PerUserTotal > 0,
 		SupportOnly: req.SupportOnly,
 		PeerColorAvailable: bundle.Gift.PeerColorAvailable, Auction: bundle.Gift.Auction,
 		AvailabilityRemains: 0, AvailabilityTotal: availabilityTotal,
 		AvailabilityResale: 0, FirstSaleDate: 0,
 		LastSaleDate: 0, ResellMinStars: 0,
-		PerUserTotal: bundle.Gift.PerUserTotal, LockedUntilDate: lockedUntilDate,
+		PerUserTotal: perUserTotal, LockedUntilDate: lockedUntilDate,
 		AuctionSlug: bundle.Gift.AuctionSlug, GiftsPerRound: bundle.Gift.GiftsPerRound,
 		AuctionStartDate: bundle.Gift.AuctionStartDate, UpgradeVariants: bundle.Gift.UpgradeVariants,
 		Background: background,
@@ -3845,6 +3938,9 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 	// contract for operator input, and a snapshot legitimately carries a
 	// locked_until_date that has already elapsed.
 	write.Catalog.NormalizeLifecycleAuthoring(int(s.now().Unix()))
+	if write.Catalog.ReleasedBy, err = s.resolveReleasedBy(ctx, req.ReleasedBy); err != nil {
+		return CommandResult{}, err
+	}
 	return s.runCommand(ctx, req.CommandMeta, ActionImportOfficialStarGift, 0, domain.Peer{}, req, func() (CommandResult, error) {
 		details := map[string]any{"source_gift_id": req.SourceGiftID, "gift_id": strconv.FormatInt(req.GiftID, 10),
 			"manifest_sha256": req.ManifestSHA256, "title": req.Title, "stars": strconv.FormatInt(req.Stars, 10),
@@ -3857,6 +3953,9 @@ func (s *Service) ImportOfficialStarGift(ctx context.Context, req ImportOfficial
 			"official_availability_remains": bundle.Gift.AvailabilityRemains,
 			"official_availability_total":   bundle.Gift.AvailabilityTotal,
 			"official_availability_resale":  bundle.Gift.AvailabilityResale,
+		}
+		if write.Catalog.ReleasedBy.Type != "" {
+			details["released_by"] = write.Catalog.ReleasedBy
 		}
 		if lockedUntilDate > 0 {
 			details["locked_until_date"] = lockedUntilDate

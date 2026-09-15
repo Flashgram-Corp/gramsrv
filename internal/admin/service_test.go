@@ -1324,6 +1324,7 @@ func TestImportStarGiftDryRunThenConfirm(t *testing.T) {
 	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, Now: fixedNow})
 	base := ImportStarGiftRequest{
 		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3, SupportOnly: true,
+		RequirePremium: true, Birthday: true,
 		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
 	}
 	base.CommandMeta = CommandMeta{CommandID: "dry-gift", Actor: "ops", Reason: "catalog", DryRun: true}
@@ -1338,6 +1339,12 @@ func TestImportStarGiftDryRunThenConfirm(t *testing.T) {
 	}
 	if !gifts.lastWrite.SupportOnly {
 		t.Fatalf("imported gift SupportOnly=%v, want true", gifts.lastWrite.SupportOnly)
+	}
+	if !gifts.lastWrite.RequirePremium {
+		t.Fatalf("imported gift RequirePremium=%v, want true", gifts.lastWrite.RequirePremium)
+	}
+	if !gifts.lastWrite.Birthday {
+		t.Fatalf("imported gift Birthday=%v, want true", gifts.lastWrite.Birthday)
 	}
 }
 
@@ -1354,6 +1361,110 @@ func TestCommandIDConflictRejectsDifferentGiftBytes(t *testing.T) {
 	req.Data = []byte("two")
 	if _, err := svc.ImportStarGift(context.Background(), req); err == nil || err.Error() != "COMMAND_ID_CONFLICT" {
 		t.Fatalf("conflict err=%v", err)
+	}
+}
+
+func TestImportStarGiftReleasedByUsernameAndNumericID(t *testing.T) {
+	gifts := &fakeGiftsService{}
+	lookup := &fakeUserLookup{users: []domain.User{{ID: 1_780_243_207, Username: "durov"}}}
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, UserLookup: lookup, Now: fixedNow})
+	base := ImportStarGiftRequest{
+		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3,
+		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
+		ReleasedBy: "@durov",
+	}
+	base.CommandMeta = CommandMeta{CommandID: "rb-user", Actor: "ops", Reason: "catalog", DryRun: false}
+	result, err := svc.ImportStarGift(context.Background(), base)
+	if err != nil || gifts.createCalls != 1 {
+		t.Fatalf("result=%+v err=%v create=%d", result, err, gifts.createCalls)
+	}
+	if got := gifts.lastWrite.ReleasedBy; got != (domain.Peer{Type: domain.PeerTypeUser, ID: 1_780_243_207}) {
+		t.Fatalf("ReleasedBy=%+v, want resolved user peer", got)
+	}
+	if result.Details["released_by"] == nil {
+		t.Fatalf("details missing released_by: %+v", result.Details)
+	}
+
+	gifts.createCalls = 0
+	base.CommandMeta = CommandMeta{CommandID: "rb-num", Actor: "ops", Reason: "catalog", DryRun: false}
+	base.ReleasedBy = "42"
+	if _, err := svc.ImportStarGift(context.Background(), base); err != nil {
+		t.Fatalf("numeric released by err=%v", err)
+	}
+	if got := gifts.lastWrite.ReleasedBy; got != (domain.Peer{Type: domain.PeerTypeUser, ID: 42}) {
+		t.Fatalf("numeric ReleasedBy=%+v, want user peer 42", got)
+	}
+
+	gifts.createCalls = 0
+	base.CommandMeta = CommandMeta{CommandID: "rb-empty", Actor: "ops", Reason: "catalog", DryRun: false}
+	base.ReleasedBy = ""
+	if _, err := svc.ImportStarGift(context.Background(), base); err != nil {
+		t.Fatalf("empty released by err=%v", err)
+	}
+	if gifts.lastWrite.ReleasedBy != (domain.Peer{}) {
+		t.Fatalf("empty ReleasedBy=%+v, want zero peer", gifts.lastWrite.ReleasedBy)
+	}
+}
+
+func TestImportStarGiftReleasedByRejectsUnknownUsername(t *testing.T) {
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: &fakeGiftsService{}, UserLookup: &fakeUserLookup{}, Now: fixedNow})
+	req := ImportStarGiftRequest{
+		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3,
+		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
+		ReleasedBy: "@ghost",
+	}
+	req.CommandMeta = CommandMeta{CommandID: "rb-missing", Actor: "ops", Reason: "catalog", DryRun: true}
+	if _, err := svc.ImportStarGift(context.Background(), req); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("err=%v, want username-not-found", err)
+	}
+	req.CommandMeta = CommandMeta{CommandID: "rb-garbage", Actor: "ops", Reason: "catalog", DryRun: true}
+	req.ReleasedBy = "not-a-peer"
+	if _, err := svc.ImportStarGift(context.Background(), req); err == nil || !strings.Contains(err.Error(), "released by must be") {
+		t.Fatalf("err=%v, want peer-format error", err)
+	}
+}
+
+func TestImportStarGiftPerUserTotalSetsLimitedPerUser(t *testing.T) {
+	gifts := &fakeGiftsService{}
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, Now: fixedNow})
+	base := ImportStarGiftRequest{
+		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3,
+		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
+		PerUserTotal: 5,
+	}
+	base.CommandMeta = CommandMeta{CommandID: "pu-5", Actor: "ops", Reason: "catalog", DryRun: false}
+	result, err := svc.ImportStarGift(context.Background(), base)
+	if err != nil || gifts.createCalls != 1 {
+		t.Fatalf("result=%+v err=%v create=%d", result, err, gifts.createCalls)
+	}
+	if !gifts.lastWrite.LimitedPerUser || gifts.lastWrite.PerUserTotal != 5 {
+		t.Fatalf("LimitedPerUser=%v PerUserTotal=%d, want true/5", gifts.lastWrite.LimitedPerUser, gifts.lastWrite.PerUserTotal)
+	}
+	if result.Details["limited_per_user"] == nil || result.Details["per_user_total"] != 5 {
+		t.Fatalf("details missing per_user_total: %+v", result.Details)
+	}
+
+	gifts.createCalls = 0
+	base.CommandMeta = CommandMeta{CommandID: "pu-0", Actor: "ops", Reason: "catalog", DryRun: false}
+	base.PerUserTotal = 0
+	if _, err := svc.ImportStarGift(context.Background(), base); err != nil {
+		t.Fatalf("zero per_user_total err=%v", err)
+	}
+	if gifts.lastWrite.LimitedPerUser || gifts.lastWrite.PerUserTotal != 0 {
+		t.Fatalf("zero: LimitedPerUser=%v PerUserTotal=%d, want false/0", gifts.lastWrite.LimitedPerUser, gifts.lastWrite.PerUserTotal)
+	}
+}
+
+func TestImportStarGiftPerUserTotalRejectsNegative(t *testing.T) {
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: &fakeGiftsService{}, Now: fixedNow})
+	req := ImportStarGiftRequest{
+		Title: "Cake", Stars: 50, ConvertStars: 25, Enabled: true, SortOrder: 3,
+		FileName: "cake.lottie", Data: []byte(`{"v":"5.7"}`),
+		PerUserTotal: -1,
+	}
+	req.CommandMeta = CommandMeta{CommandID: "pu-neg", Actor: "ops", Reason: "catalog", DryRun: false}
+	if _, err := svc.ImportStarGift(context.Background(), req); err == nil {
+		t.Fatal("negative per_user_total should be rejected")
 	}
 }
 
@@ -1472,18 +1583,68 @@ func TestImportOfficialStarGiftPreservesCraftedRarityAndPublishesBundle(t *testi
 		t.Fatalf("imported models=%+v backdrops=%+v", models, gifts.lastBundle.Collectible.Backdrops)
 	}
 	catalog := gifts.lastBundle.Catalog
-	// The operator's "Уникальный тираж" (supply_total) is derived from the snapshot's
-	// availability when absent, so a finite unique supply now limits the base gift to
-	// the same run size. Sold-out, resale, and sale-date state still does not leak.
-	if !catalog.Limited || catalog.SoldOut || catalog.AvailabilityTotal != 10 || catalog.AvailabilityRemains != 10 ||
+	// The collectible supply ("уникальный тираж") configures the pool alone and
+	// never turns the base gift into a limited edition: without the explicit
+	// Limited flag the base catalog stays unlimited even when the snapshot and
+	// pool carry finite numbers. Sold-out, resale, and sale-date state still does
+	// not leak into a fresh local identity.
+	if catalog.Limited || catalog.SoldOut || catalog.AvailabilityTotal != 0 || catalog.AvailabilityRemains != 0 ||
 		catalog.AvailabilityResale != 0 || catalog.FirstSaleDate != 0 || catalog.LastSaleDate != 0 || catalog.ResellMinStars != 0 {
 		t.Fatalf("unexpected local catalog state: limited=%v sold_out=%v total=%d remains=%d resale=%d first=%d last=%d resell_min=%d",
 			catalog.Limited, catalog.SoldOut, catalog.AvailabilityTotal, catalog.AvailabilityRemains,
 			catalog.AvailabilityResale, catalog.FirstSaleDate, catalog.LastSaleDate, catalog.ResellMinStars)
 	}
+	if gifts.lastBundle.Collectible == nil || gifts.lastBundle.Collectible.SupplyTotal != source.bundle.Gift.AvailabilityTotal {
+		t.Fatalf("collectible pool supply was not preserved: %+v", gifts.lastBundle.Collectible)
+	}
 	if catalog.OfficialGiftID != source.bundle.Gift.ID || !bytes.Equal(catalog.OfficialSourceJSON, source.bundle.SourceJSON) ||
 		!bytes.Equal(catalog.SourceManifestSHA256, source.bundle.ManifestSHA256) {
 		t.Fatalf("official provenance was not preserved: %+v", catalog)
+	}
+}
+
+func TestImportOfficialStarGiftAvailabilityLimitSeedsBaseSupply(t *testing.T) {
+	permille := 922
+	source := &fakeOfficialGiftsSource{bundle: officialgifts.Bundle{
+		ManifestSHA256: bytesOf(0x42, 32),
+		SourceJSON:     []byte(`{"id":5170145012310081615,"limited":true,"availability_total":10}`),
+		Gift: officialgifts.Gift{
+			ID: 5170145012310081615, Stars: 50, ConvertStars: 25, UpgradeStars: 100, DocumentID: 1,
+			Limited: true, AvailabilityTotal: 10, UpgradeVariants: 2,
+		},
+		BaseDocument: officialgifts.Document{ID: 1, FileName: "gift.tgs", SHA256: strings.Repeat("a", 64), Data: []byte("gift")},
+		Collectible: &officialgifts.CollectibleSet{
+			Models: []officialgifts.Model{
+				{Name: "Regular", DocumentID: 2, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}, Document: officialgifts.Document{ID: 2, FileName: "regular.tgs", SHA256: strings.Repeat("b", 64), Data: []byte("regular")}},
+				{Name: "Regular Two", DocumentID: 5, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}, Document: officialgifts.Document{ID: 5, FileName: "regular-two.tgs", SHA256: strings.Repeat("e", 64), Data: []byte("regular-two")}},
+			},
+			Patterns: []officialgifts.Pattern{
+				{Name: "Pattern", DocumentID: 4, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}, Document: officialgifts.Document{ID: 4, FileName: "pattern.tgs", SHA256: strings.Repeat("d", 64), Data: []byte("pattern")}},
+				{Name: "Pattern Two", DocumentID: 6, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}, Document: officialgifts.Document{ID: 6, FileName: "pattern-two.tgs", SHA256: strings.Repeat("f", 64), Data: []byte("pattern-two")}},
+			},
+			Backdrops: []officialgifts.Backdrop{
+				{Name: "Black", BackdropID: 0, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}},
+				{Name: "White", BackdropID: 1, Rarity: officialgifts.Rarity{Kind: "permille", Permille: &permille}},
+			},
+		},
+	}}
+	gifts := &fakeGiftsService{}
+	svc := NewService(Dependencies{Commands: newMemoryCommandRepo(), Gifts: gifts, OfficialGifts: source, Now: fixedNow})
+	req := ImportOfficialStarGiftRequest{SourceGiftID: "5170145012310081615", Enabled: true, IncludeCollectible: true, AvailabilityTotal: 10, SupplyTotal: 10, RequirePremium: true}
+	req.CommandMeta = CommandMeta{CommandID: "exec-official-limited", Actor: "ops", Reason: "official snapshot", DryRun: false}
+	result, err := svc.ImportOfficialStarGift(context.Background(), req)
+	if err != nil || gifts.createCalls != 1 {
+		t.Fatalf("result=%+v err=%v create=%d", result, err, gifts.createCalls)
+	}
+	catalog := gifts.lastBundle.Catalog
+	if !catalog.Limited || catalog.AvailabilityTotal != 10 || catalog.AvailabilityRemains != 10 || catalog.AvailabilityResale != 0 {
+		t.Fatalf("gift limit did not seed base supply: %+v", catalog)
+	}
+	if !catalog.RequirePremium {
+		t.Fatalf("require_premium was not applied: %+v", catalog)
+	}
+	if gifts.lastBundle.Collectible == nil || gifts.lastBundle.Collectible.SupplyTotal != 10 {
+		t.Fatalf("collectible pool supply not seeded: %+v", gifts.lastBundle.Collectible)
 	}
 }
 
@@ -2326,6 +2487,16 @@ type fakeUserLookup struct{ users []domain.User }
 func (f *fakeUserLookup) ByPhone(_ context.Context, phone string) (domain.User, bool, error) {
 	for _, u := range f.users {
 		if u.Phone == phone {
+			return u, true, nil
+		}
+	}
+	return domain.User{}, false, nil
+}
+
+func (f *fakeUserLookup) ByUsername(_ context.Context, username string) (domain.User, bool, error) {
+	username = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(username, "@")))
+	for _, u := range f.users {
+		if strings.ToLower(strings.TrimPrefix(u.Username, "@")) == username {
 			return u, true, nil
 		}
 	}

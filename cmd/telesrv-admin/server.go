@@ -2069,16 +2069,21 @@ func (s *server) handleDeleteHistoryAPI(w http.ResponseWriter, r *http.Request) 
 }
 
 type importStarGiftAPIRequest struct {
-	CommandID    string `json:"command_id"`
-	Reason       string `json:"reason"`
-	Confirm      bool   `json:"confirm"`
-	GiftID       int64  `json:"gift_id,string"`
-	Title        string `json:"title"`
-	Stars        int64  `json:"stars,string"`
-	ConvertStars int64  `json:"convert_stars,string"`
-	Enabled      bool   `json:"enabled"`
-	SortOrder    int    `json:"sort_order"`
-	SupportOnly  bool   `json:"support_only,omitempty"`
+	CommandID     string `json:"command_id"`
+	Reason        string `json:"reason"`
+	Confirm       bool   `json:"confirm"`
+	GiftID        int64  `json:"gift_id,string"`
+	Title         string `json:"title"`
+	Limited       bool   `json:"limited,omitempty"`
+	RequirePremium bool `json:"require_premium,omitempty"`
+	Birthday      bool   `json:"birthday,omitempty"`
+	Stars         int64  `json:"stars,string"`
+	ConvertStars  int64  `json:"convert_stars,string"`
+	Enabled       bool   `json:"enabled"`
+	SortOrder     int    `json:"sort_order"`
+	SupportOnly   bool   `json:"support_only,omitempty"`
+	ReleasedBy    string `json:"released_by_peer"`
+	PerUserTotal  int    `json:"per_user_total"`
 
 	// Optional lifecycle authoring for the auction panel and the scheduled
 	// release ("отложенный дроп"). Zero values describe an ordinary gift; the
@@ -2124,11 +2129,16 @@ func (s *server) handleImportStarGiftAPI(w http.ResponseWriter, r *http.Request)
 		CommandMeta:  s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "import-gift"),
 		GiftID:       body.GiftID,
 		Title:        body.Title,
+		Limited:      body.Limited,
+		RequirePremium: body.RequirePremium,
+		Birthday:     body.Birthday,
 		Stars:        body.Stars,
 		ConvertStars: body.ConvertStars,
 		Enabled:      body.Enabled,
 		SupportOnly:  body.SupportOnly,
 		SortOrder:    body.SortOrder,
+		ReleasedBy:   body.ReleasedBy,
+			PerUserTotal: body.PerUserTotal,
 		FileName:     header.Filename,
 
 		Auction:              body.Auction,
@@ -2150,6 +2160,10 @@ type importOfficialStarGiftAPIRequest struct {
 	SourceGiftID       string `json:"source_gift_id"`
 	GiftID             int64  `json:"gift_id,string"`
 	Title              string `json:"title"`
+	Limited            bool   `json:"limited,omitempty"`
+	RequirePremium     bool   `json:"require_premium,omitempty"`
+	Birthday           bool   `json:"birthday,omitempty"`
+	AvailabilityTotal  int    `json:"availability_total"`
 	Stars              int64  `json:"stars,string"`
 	ConvertStars       int64  `json:"convert_stars,string"`
 	Enabled            bool   `json:"enabled"`
@@ -2159,6 +2173,8 @@ type importOfficialStarGiftAPIRequest struct {
 	UpgradeStars       int64  `json:"upgrade_stars,string"`
 	SupplyTotal        int    `json:"supply_total"`
 	SlugPrefix         string `json:"slug_prefix"`
+	ReleasedBy         string `json:"released_by_peer"`
+	PerUserTotal       int    `json:"per_user_total"`
 	// Unix seconds at which the imported gift becomes purchasable. Zero keeps the
 	// snapshot's own release time.
 	LockedUntilDate int `json:"locked_until_date"`
@@ -2176,10 +2192,13 @@ func (s *server) handleImportOfficialStarGiftAPI(w http.ResponseWriter, r *http.
 	req := admin.ImportOfficialStarGiftRequest{
 		CommandMeta:  s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "import-official-gift"),
 		SourceGiftID: body.SourceGiftID, GiftID: body.GiftID, Title: body.Title,
+		Limited: body.Limited, RequirePremium: body.RequirePremium, Birthday: body.Birthday, AvailabilityTotal: body.AvailabilityTotal,
 		Stars: body.Stars, ConvertStars: body.ConvertStars, Enabled: body.Enabled, SortOrder: body.SortOrder,
 		SupportOnly: body.SupportOnly,
 		IncludeCollectible: body.IncludeCollectible, UpgradeStars: body.UpgradeStars,
 		SupplyTotal: body.SupplyTotal, SlugPrefix: body.SlugPrefix,
+		ReleasedBy: body.ReleasedBy,
+			PerUserTotal: body.PerUserTotal,
 		LockedUntilDate: body.LockedUntilDate,
 	}
 	result, err := s.callAdminAPI(r.Context(), "/v1/official-gifts/import", req)

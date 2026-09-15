@@ -1331,6 +1331,11 @@ WHERE channel_id=$1 AND message::text LIKE '%star_gift_unique%'`, created.Channe
 	if err := pool.QueryRow(ctx, `SELECT saved_gift_id FROM star_gift_auction_acquired WHERE gift_id=$1`, auctionEntry.Gift.ID).Scan(&awardSavedID); err != nil || awardSavedID <= 0 {
 		t.Fatalf("channel auction saved id = %d err %v", awardSavedID, err)
 	}
+	var auctionSoldOut bool
+	if err := pool.QueryRow(ctx, `SELECT r.sold_out FROM star_gift_catalog c
+JOIN star_gift_catalog_revisions r ON r.id=c.active_revision_id WHERE c.gift_id=$1`, auctionEntry.Gift.ID).Scan(&auctionSoldOut); err != nil || !auctionSoldOut {
+		t.Fatalf("exhausted auction gift sold_out=%v want true err=%v", auctionSoldOut, err)
+	}
 	var awardLogs int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM channel_admin_log_events
 WHERE channel_id=$1 AND message::text LIKE '%auction_acquired%'`, created.Channel.ID).Scan(&awardLogs); err != nil || awardLogs != 1 {
