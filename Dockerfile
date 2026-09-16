@@ -12,7 +12,7 @@ RUN apk add --no-cache ca-certificates git
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN go mod download
 
 COPY cmd/ ./cmd/
 COPY deploy/ ./deploy/
@@ -25,9 +25,7 @@ ARG VCS_REF=unknown
 ARG VCS_BRANCH=unknown
 ARG VCS_TREE_STATE=unknown
 ARG BUILD_DATE=unknown
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath \
       -ldflags="-s -w -X main.gitCommit=${VCS_REF} -X main.gitBranch=${VCS_BRANCH} -X main.gitTreeState=${VCS_TREE_STATE} -X main.buildTime=${BUILD_DATE}" \
       -o /out/telesrv ./cmd/telesrv
@@ -35,11 +33,9 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM build-base AS build-admin
 RUN apk add --no-cache nodejs npm
 WORKDIR /src/cmd/telesrv-admin/web
-RUN --mount=type=cache,target=/root/.npm npm ci && npm run build
+RUN npm ci && npm run build
 WORKDIR /src
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/telesrv-admin ./cmd/telesrv-admin
 
 FROM ${ALPINE_IMAGE} AS runtime-base
@@ -88,4 +84,5 @@ USER 10001:10001
 FROM runtime-base AS admin
 COPY --from=build-admin /out/telesrv-admin /usr/local/bin/telesrv-admin
 EXPOSE 2600
-CMD ["telesrv-admin"]
+CMD
+["telesrv-admin"]
