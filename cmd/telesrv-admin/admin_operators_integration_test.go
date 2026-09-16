@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"telesrv/internal/admin"
 )
 
@@ -331,5 +333,304 @@ func TestAuditTrailRecordsAndListsThroughTheRoutes(t *testing.T) {
 	// A limit below the row count slices newest-first.
 	if rows := filter("limit=1"); len(rows) != 1 || rows[0].Action != "set-admin-operator-access" {
 		t.Fatalf("limit filter rows=%+v", rows)
+	}
+}
+
+// TestOperatorCommandReplayConflictAndSingleExecution pins the review's
+// idempotency requirement: the same command_id must never re-execute the
+// mutation, an identical replay returns the stored outcome with
+// already_executed, and a command_id reused for a different request (a
+// different password, a different action) is refused with COMMAND_ID_CONFLICT.
+func TestOperatorCommandReplayConflictAndSingleExecution(t *testing.T) {
+	srv, store := operatorServer(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+	operator := "opal" + suffix
+	commandID := "op-pwd-" + suffix
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_console_users WHERE username = $1`, operator)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_audit_logs WHERE command_id = $1`, commandID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_commands WHERE command_id = $1`, commandID)
+	})
+
+	user, err := srv.createAdminConsoleUser(ctx, operator, "initial-"+suffix, []string{permissionAdminsManage}, true)
+	if err != nil {
+		t.Fatalf("create target operator: %v", err)
+	}
+	if user.TokenEpoch != 1 {
+		t.Fatalf("new operator epoch=%d, want 1", user.TokenEpoch)
+	}
+	targetPW := "target-pw-" + suffix
+	meta := admin.CommandMeta{CommandID: commandID, Actor: "audit-tester", Reason: "integration"}
+	params := map[string]any{"id": user.ID}
+	fn := func(ctx context.Context, tx pgx.Tx) (admin.CommandResult, error) {
+		if err := setAdminConsoleUserPasswordOn(ctx, tx, user.ID, targetPW); err != nil {
+			return admin.CommandResult{}, err
+		}
+		return admin.CommandResult{Status: "ok", Message: "changed"}, nil
+	}
+	readEpoch := func() int32 {
+		t.Helper()
+		var epoch int32
+		if err := store.pool.QueryRow(ctx, `SELECT token_epoch FROM admin_console_users WHERE id = $1`, user.ID).Scan(&epoch); err != nil {
+			t.Fatalf("read epoch: %v", err)
+		}
+		return epoch
+	}
+
+	result, err := srv.runOperatorCommand(ctx, meta, "set-admin-operator-password", params, targetPW, fn)
+	if err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if result.AlreadyExecuted || result.Status != "completed" {
+		t.Fatalf("first run result=%+v", result)
+	}
+	if epoch := readEpoch(); epoch != 2 {
+		t.Fatalf("epoch after first password change=%d, want 2", epoch)
+	}
+
+	// Replaying the identical request returns the stored outcome and does NOT
+	// bump the epoch again (the mutation a replay would re-run is the point of
+	// the guard).
+	replay, err := srv.runOperatorCommand(ctx, meta, "set-admin-operator-password", params, targetPW, fn)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if !replay.AlreadyExecuted || replay.Status != "completed" || replay.Message != "changed" {
+		t.Fatalf("replay result=%+v, want stored outcome with already_executed", replay)
+	}
+	if epoch := readEpoch(); epoch != 2 {
+		t.Fatalf("epoch after replay=%d, want 2 (no re-execution)", epoch)
+	}
+
+	// The same command_id with a different password disagrees on the fingerprint
+	// and must conflict rather than change anything.
+	otherSecret := "other-" + suffix
+	if _, err := srv.runOperatorCommand(ctx, meta, "set-admin-operator-password", params, otherSecret, fn); err == nil || err.Error() != "COMMAND_ID_CONFLICT" {
+		t.Fatalf("conflicting password err=%v, want COMMAND_ID_CONFLICT", err)
+	}
+	// A different action under the same command_id conflicts too.
+	if _, err := srv.runOperatorCommand(ctx, meta, "create-admin-operator", params, otherSecret, fn); err == nil || err.Error() != "COMMAND_ID_CONFLICT" {
+		t.Fatalf("conflicting action err=%v, want COMMAND_ID_CONFLICT", err)
+	}
+	if epoch := readEpoch(); epoch != 2 {
+		t.Fatalf("epoch after conflicts=%d, want 2", epoch)
+	}
+
+	// Exactly one audit row ties the operation to its command_id once.
+	var auditN int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*)::int FROM admin_audit_logs WHERE command_id = $1`, commandID).Scan(&auditN); err != nil {
+		t.Fatalf("count audit: %v", err)
+	}
+	if auditN != 1 {
+		t.Fatalf("audit rows=%d, want 1", auditN)
+	}
+}
+
+// TestOperatorCommandFailureLandsInAuditAtomically checks that a failed
+// mutation is still recorded (status failed) in both admin_commands and the
+// audit trail through the same transaction as the attempt itself.
+func TestOperatorCommandFailureLandsInAuditAtomically(t *testing.T) {
+	srv, store := operatorServer(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+	commandID := "op-fail-" + suffix
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_audit_logs WHERE command_id = $1`, commandID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_commands WHERE command_id = $1`, commandID)
+	})
+
+	meta := admin.CommandMeta{CommandID: commandID, Actor: "audit-tester", Reason: "integration"}
+	fn := func(ctx context.Context, tx pgx.Tx) (admin.CommandResult, error) {
+		if err := setAdminConsoleUserPasswordOn(ctx, tx, 999_999_999_999, "pw-"+suffix); err != nil {
+			return admin.CommandResult{}, err
+		}
+		return admin.CommandResult{Status: "ok", Message: "unreachable"}, nil
+	}
+	if _, err := srv.runOperatorCommand(ctx, meta, "set-admin-operator-password",
+		map[string]any{"id": 999_999_999_999}, "pw-"+suffix, fn); !errors.Is(err, errAdminUserNotFound) {
+		t.Fatalf("missing-target err=%v, want errAdminUserNotFound", err)
+	}
+	var inCommands, inAudit string
+	if err := store.pool.QueryRow(ctx, `SELECT status FROM admin_commands WHERE command_id = $1`, commandID).Scan(&inCommands); err != nil {
+		t.Fatalf("read admin_commands: %v", err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT status FROM admin_audit_logs WHERE command_id = $1`, commandID).Scan(&inAudit); err != nil {
+		t.Fatalf("read admin_audit_logs: %v", err)
+	}
+	if inCommands != "failed" || inAudit != "failed" {
+		t.Fatalf("failed command recorded as commands=%s audit=%s, want failed/failed", inCommands, inAudit)
+	}
+}
+
+// TestOperatorCreateRouteIdempotentAndConflictAware exercises the routed
+// create-operator flow end to end: dry run, confirm, replay of the confirmed
+// command_id, and reuse of the same command_id for a different request.
+func TestOperatorCreateRouteIdempotentAndConflictAware(t *testing.T) {
+	srv, store := operatorServer(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+	manager := "mgr" + suffix
+	createdUser := "cookie" + suffix
+	otherUser := "pretzel" + suffix
+	dryID := "dry-create-" + suffix
+	execID := "exec-create-" + suffix
+	manager, other := manager, otherUser
+
+	u, err := srv.createAdminConsoleUser(ctx, manager, "pw-"+suffix, []string{permissionAdminsManage, permissionAuditRead}, true)
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	managerID := u.ID
+	cookies, token := namedSignIn(t, srv, manager, "pw-"+suffix)
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_console_users WHERE id = $1`, managerID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_console_users WHERE username = $1`, createdUser)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_console_users WHERE username = $1`, other)
+		for _, id := range []string{dryID, execID} {
+			_, _ = store.pool.Exec(ctx, `DELETE FROM admin_audit_logs WHERE command_id = $1`, id)
+			_, _ = store.pool.Exec(ctx, `DELETE FROM admin_commands WHERE command_id = $1`, id)
+		}
+	})
+
+	post := func(commandID, username string, confirm bool) (int, map[string]any) {
+		t.Helper()
+		enabled := true
+		body, err := json.Marshal(adminUserActionRequest{
+			CommandID: commandID, Reason: "integration", Confirm: confirm,
+			Username: username, Password: "pw-" + suffix,
+			Permissions: []string{permissionAdminsManage}, Enabled: &enabled,
+		})
+		if err != nil {
+			t.Fatalf("marshal action: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/actions/create-admin-operator", strings.NewReader(string(body)))
+		req.Header.Set(csrfHeaderName, token)
+		srv.routes().ServeHTTP(rec, withCookies(req, cookies))
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+
+	// Dry run first; a fresh dry command_id. The runner normalises the outcome
+	// status to the same completed/failed vocabulary the domain commands use.
+	code, dry := post(dryID, createdUser, false)
+	if code != http.StatusOK || dry["dry_run"] != true || dry["status"] != "completed" {
+		t.Fatalf("dry run code=%d body=%+v", code, dry)
+	}
+
+	// Confirmed run under its own command_id executes the creation.
+	code, exec := post(execID, createdUser, true)
+	if code != http.StatusOK || exec["already_executed"] == true || exec["status"] != "completed" {
+		t.Fatalf("confirm code=%d body=%+v", code, exec)
+	}
+
+	// Replaying the confirmed command_id returns the stored result and does not
+	// try to create the same username again (which would have failed it).
+	code, replay := post(execID, createdUser, true)
+	if code != http.StatusOK || replay["already_executed"] != true || replay["status"] != "completed" {
+		t.Fatalf("replay code=%d body=%+v", code, replay)
+	}
+	var created int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*)::int FROM admin_console_users WHERE username = $1`, createdUser).Scan(&created); err != nil {
+		t.Fatalf("count created: %v", err)
+	}
+	if created != 1 {
+		t.Fatalf("created rows=%d, want 1", created)
+	}
+
+	// Same command_id, different request: refuse (over 502 by panel convention,
+	// the same way the domain service reports command conflicts), and do not
+	// create anything.
+	code, conflict := post(execID, other, true)
+	if code != http.StatusBadGateway || conflict["error"] != "COMMAND_ID_CONFLICT" {
+		t.Fatalf("conflict code=%d body=%+v, want 502 COMMAND_ID_CONFLICT", code, conflict)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT count(*)::int FROM admin_console_users WHERE username = $1`, other).Scan(&created); err != nil {
+		t.Fatalf("count other: %v", err)
+	}
+	if created != 0 {
+		t.Fatalf("conflicting request created %d rows, want 0", created)
+	}
+
+	// Exactly two audit rows exist: the dry run and the executed run.
+	var auditN int
+	if err := store.pool.QueryRow(ctx, `
+SELECT count(*)::int FROM admin_audit_logs WHERE command_id = $1 OR command_id = $2`, dryID, execID).Scan(&auditN); err != nil {
+		t.Fatalf("count audit: %v", err)
+	}
+	if auditN != 2 {
+		t.Fatalf("audit rows=%d, want 2 (dry + exec, no replay duplicates)", auditN)
+	}
+}
+
+// TestOperatorCreateRouteRefusesUntenablePermissions proves the routes enforce
+// validatePermissions end to end: granting "*" to a named account, or any name
+// outside the assignable vocabulary, fails the dry run itself (verified before
+// an operator is asked to confirm) and never reaches the store.
+func TestOperatorCreateRouteRefusesUntenablePermissions(t *testing.T) {
+	srv, store := operatorServer(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+	manager := "mgr" + suffix
+	username := "fails" + suffix
+	commandID := "bad-perm-" + suffix
+
+	u, err := srv.createAdminConsoleUser(ctx, manager, "pw-"+suffix, []string{permissionAdminsManage, permissionAuditRead}, true)
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	managerID := u.ID
+	cookies, token := namedSignIn(t, srv, manager, "pw-"+suffix)
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_console_users WHERE id = $1`, managerID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_console_users WHERE username = $1`, username)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_audit_logs WHERE command_id = $1`, commandID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_commands WHERE command_id = $1`, commandID)
+	})
+
+	post := func(permissions []string) (int, map[string]any) {
+		t.Helper()
+		enabled := true
+		body, err := json.Marshal(adminUserActionRequest{
+			CommandID: commandID, Reason: "integration", Confirm: false,
+			Username: username, Password: "pw-" + suffix,
+			Permissions: permissions, Enabled: &enabled,
+		})
+		if err != nil {
+			t.Fatalf("marshal action: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/actions/create-admin-operator", strings.NewReader(string(body)))
+		req.Header.Set(csrfHeaderName, token)
+		srv.routes().ServeHTTP(rec, withCookies(req, cookies))
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out
+	}
+
+	cases := []string{permissionAll, "acounts.read", "accounts.*"}
+	var rejected int
+	for _, bad := range cases {
+		code, out := post([]string{bad})
+		if code != http.StatusBadGateway {
+			t.Fatalf("permission %q code=%d body=%+v, want 502", bad, code, out)
+		}
+		if msg, _ := out["message"].(string); msg == "" {
+			t.Fatalf("permission %q rejection without a message body=%+v", bad, out)
+		}
+		rejected++
+	}
+	// The dry run rejected every bad permission without creating the user.
+	if rejected != len(cases) {
+		t.Fatalf("rejected=%d cases=%d", rejected, len(cases))
+	}
+	var created int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*)::int FROM admin_console_users WHERE username = $1`, username).Scan(&created); err != nil {
+		t.Fatalf("count created: %v", err)
+	}
+	if created != 0 {
+		t.Fatalf("created rows=%d, want 0", created)
 	}
 }

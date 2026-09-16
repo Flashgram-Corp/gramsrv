@@ -63,12 +63,17 @@ func (s *server) recordAgentCommand(r *http.Request, meta admin.CommandMeta, act
 	// "provided via the signed-in operator, at which command id, with which
 	// reason" envelope a domain command does. No password travels in the request
 	// envelope, so none can leak into either table.
+	//
+	// target_user_id / target_peer_type / target_peer_id are omitted on purpose:
+	// panel commands have no domain target (CommandMeta has none), and the
+	// columns are NOT NULL DEFAULT 0/'' -- an explicit NULL would abort with
+	// SQLSTATE 23502 on real PostgreSQL. Defaults keep the row well-formed.
 	if _, err := tx.Exec(ctx, `
 INSERT INTO admin_commands (
-	command_id, actor, action, target_user_id, target_peer_type, target_peer_id,
+	command_id, actor, action,
 	dry_run, reason, request, result, status, error, created_at
 ) VALUES (
-	$1, $2, $3, NULL, NULL, NULL, $4, $5, $6::jsonb, $7::jsonb, $8, $9, now()
+	$1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, now()
 ) ON CONFLICT (command_id) DO NOTHING`,
 		meta.CommandID, meta.Actor, action, meta.DryRun, meta.Reason,
 		string(requestJSON), string(resultJSON), status, errorText,

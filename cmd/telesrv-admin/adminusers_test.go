@@ -121,6 +121,38 @@ func TestParseBoundLimitDefaultsCapsAndRejects(t *testing.T) {
 	}
 }
 
+// normalisePermissions deliberately keeps the wildcard collapse for legacy rows
+// and the break-glass path, so the fence that keeps "*" off a named account
+// lives in validatePermissions -- the handler calls it before anything is
+// stored.
+func TestValidatePermissionsRejectsTheWildcardAndUnknown(t *testing.T) {
+	// The wildcard is refused for a named account even though normalise
+	// recognises it.
+	if err := validatePermissions([]string{permissionAll}); err == nil {
+		t.Fatal("wildcard accepted, want rejection")
+	}
+	if err := validatePermissions([]string{"accounts.read", permissionAll, "audit.read"}); err == nil {
+		t.Fatal("wildcard in a mixed list accepted, want rejection")
+	}
+	// Unknown names are refused, typos included.
+	if err := validatePermissions([]string{"acounts.read"}); err == nil {
+		t.Fatal("typo accepted, want rejection")
+	}
+	if err := validatePermissions([]string{"accounts.*"}); err == nil {
+		t.Fatal("pattern accepted, want rejection")
+	}
+	// Every assignable name passes, and an empty list is a valid grant.
+	if err := validatePermissions(assignablePermissions()); err != nil {
+		t.Fatalf("assignable list rejected: %v", err)
+	}
+	if err := validatePermissions([]string{"accounts.read", "audit.read"}); err != nil {
+		t.Fatalf("known list rejected: %v", err)
+	}
+	if err := validatePermissions(nil); err != nil {
+		t.Fatalf("nil rejected: %v", err)
+	}
+}
+
 func TestNormalisePermissionsCollapsesToTheWildcard(t *testing.T) {
 	got := normalisePermissions([]string{"accounts.read", "accounts.read", "audit.read"})
 	if len(got) != 2 || got[0] != "accounts.read" || got[1] != "audit.read" {
