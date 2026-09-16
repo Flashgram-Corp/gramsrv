@@ -120,6 +120,21 @@ test("setFrozen posts frozen state and dry-run metadata", async () => {
   });
 });
 
+test("setFrozen supplies a future int32 freeze_until and an appeal URL on freeze", async () => {
+  const client = new GramsrvClient({ gramsrvActor: "test", publicBaseURL: "https://example.com" });
+  const calls = [];
+  client.post = async (route, body) => { calls.push({ route, body }); return {}; };
+  await client.setFrozen(10, true, "Admin moderation", "", true, "777");
+  assert.equal(calls[0].route, "/v1/accounts/set-frozen");
+  const body = calls[0].body;
+  assert.equal(body.user_id, 10);
+  assert.equal(body.frozen, true);
+  const until = Date.parse(body.freeze_until) / 1000;
+  assert.ok(Number.isSafeInteger(until) && until > Date.now() / 1000 && until <= 2_147_483_647, "freeze_until must be a future int32 Unix timestamp");
+  assert.equal(body.freeze_appeal_url, "https://example.com/appeal/10");
+  assert.equal(body.dry_run, true);
+});
+
 test("setFlags posts scam and fake flags", async () => {
   const client = new GramsrvClient({ gramsrvActor: "test" });
   let body;

@@ -108,6 +108,13 @@ export class GramsrvClient {
 
   setFrozen(userID, frozen, reason = "Telegram bot moderation", idempotencyKey = "", dryRun = false, actor = "") {
     const payload = this.command(reason, { user_id: userID, frozen }, idempotencyKey, actor);
+    if (frozen) {
+      // The server rejects a freeze without a non-zero int32 Unix timestamp and
+      // an absolute appeal URL. Use the int32 maximum as a practical "indefinite
+      // until further notice" freeze; unfreezing (`frozen: false`) omits both.
+      payload.freeze_until = new Date(2_147_483_647 * 1000).toISOString();
+      payload.freeze_appeal_url = `${this.config.publicBaseURL}/appeal/${userID}`;
+    }
     if (dryRun) payload.dry_run = true;
     return this.post("/v1/accounts/set-frozen", payload);
   }
