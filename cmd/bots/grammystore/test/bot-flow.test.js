@@ -124,7 +124,12 @@ function mockDb() {
     markRefunded: async () => {},
     addSupportMessage: async (id, chatID, text) => { const ticket = tickets.size + 1; tickets.set(ticket, { id: ticket, telegram_id: id, chat_id: chatID, text, status: "open", created_at: 0, answered_at: 0, answered_by: 0, answer: "" }); return ticket; },
     supportMessage: async (ticketID) => tickets.get(ticketID) ?? null,
-    closeSupportMessage: async (ticketID, answeredBy = 0, answer = "") => { const t = tickets.get(ticketID); if (t) { t.status = "answered"; t.answered_by = answeredBy; t.answer = answer; } },
+    closeSupportMessage: async (ticketID, answeredBy = 0, answer = "") => {
+      const t = tickets.get(ticketID);
+      if (!t || t.status !== "open") return false;
+      t.status = "answered"; t.answered_by = answeredBy; t.answer = answer;
+      return true;
+    },
     verifiedPhone: async () => null,
     bindVerifiedPhone: async () => ({ phone: "+79990000000" }),
     unbindVerifiedPhone: async () => true,
@@ -135,7 +140,7 @@ function mockDb() {
     adminRecentActivity: async () => ({ sales: [], refunds: [] }),
     rateSupportTicket: async (ticketID, rating, telegramID) => {
       const t = tickets.get(ticketID);
-      if (!t || t.telegram_id !== telegramID || t.rating) return false;
+      if (!t || t.telegram_id !== telegramID || t.status !== "answered" || t.rating) return false;
       t.rating = rating;
       return true;
     },
@@ -482,7 +487,7 @@ test("replying to a closed ticket does not leak into a leftover giveaway prompt"
   });
   assert.equal(giveawayCalls, 0, "a ticket reply must never reach the giveaway creator");
   const adminReply = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
-  assert.match(adminReply.payload.text, /Обращение не найдено|The ticket was not found/i);
+  assert.match(adminReply.payload.text, /уже отвечено|already answered/i);
 });
 
 test("admin input errors are sent with HTML parse mode so <code> renders", async () => {
@@ -507,12 +512,36 @@ test("a user can rate a closed ticket once", async () => {
   await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
   await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
   await db.addSupportMessage(10, 10, "help me with my order");
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 10, chatID: 10, data: "rate:1:5" }));
+  const rejected = calls.filter((call) => call.method === "editMessageText" && call.payload.chat_id === 10).at(-1);
+  assert.match(rejected.payload.text, /Не удалось оценить|Could not rate/i, "a forged rating on an open ticket is rejected");
+  assert.equal(await db.rateSupportTicket(1, 5, 10), false, "the open ticket stores no rating");
   await db.closeSupportMessage(1, "777", "restart your server");
   await bot.handleUpdate(accountCallbackUpdate({ fromID: 10, chatID: 10, data: "rate:1:5" }));
   const thanks = calls.filter((call) => call.method === "editMessageText" && call.payload.chat_id === 10).at(-1);
   assert.match(thanks.payload.text, /Спасибо|Thank you/i);
   assert.match(thanks.payload.text, /5\/5/);
   assert.equal(await db.rateSupportTicket(1, 3, 10), false, "a second rating from the same user is rejected");
+});
+
+test("a losing admin is told a ticket was already answered and delivers nothing", async () => {
+  const { bot, calls, db, config } = fixture();
+  config.ownerIDs.add(777);
+  await db.upsertUser({ id: 10, first_name: "User", language_code: "ru" }, 10, "ru");
+  await db.upsertUser({ id: 777, first_name: "Admin", language_code: "ru" }, 777, "ru");
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 10, chatID: 10, data: "menu:support" }));
+  await bot.handleUpdate(textUpdate({ fromID: 10, chatID: 10, text: "help me with my order" }));
+  await db.closeSupportMessage(1, "111", "first answer");
+  const deliveredBefore = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 10).length;
+  await bot.handleUpdate(accountCallbackUpdate({ fromID: 777, chatID: 777, data: "admin:reply" }));
+  await bot.handleUpdate(textUpdate({ fromID: 777, chatID: 777, text: "1 second answer" }));
+  const loserReply = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 777).at(-1);
+  assert.match(loserReply.payload.text, /уже отвечено|already answered/i);
+  const deliveredAfter = calls.filter((call) => call.method === "sendMessage" && call.payload.chat_id === 10).length;
+  assert.equal(deliveredAfter, deliveredBefore, "a losing admin must not deliver a second answer to the user");
+  const ticket = await db.supportMessage(1);
+  assert.equal(ticket.answered_by, "111", "the first answer keeps the claim");
+  assert.equal(ticket.answer, "first answer");
 });
 
 test("admin audit lists support ticket ratings", async () => {

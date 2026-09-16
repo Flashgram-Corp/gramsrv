@@ -7,13 +7,19 @@
 -- 40P01). dialog_owner was added in 0195, widening the lock set and exposing
 -- the race.
 --
--- Serialize all dialog read-model writers per (owner, peer) with a
--- transaction-scoped advisory lock -- the same recipe used by the per-user
--- advisory locks in the message store. Every per-row dialog trigger funnels
--- into telesrv_bump_dialog_light, so a single lock here covers channel
--- dialogs, private dialogs, channel-membership dialog bumps and contact
--- bumps. The membership batch path keeps its deterministic ORDER BY lock
--- order (0196) and does not contend through this helper.
+-- The advisory lock is owner-scoped, not (owner, peer): the dialog_owner row
+-- is a single row shared by every peer of the owner, so per-peer advisory
+-- locks still deadlock when each of two transactions bumps two peers of the
+-- same owner -- txn A holds advisory(owner, A) + dialog_owner, txn B holds
+-- advisory(owner, B) and waits on dialog_owner, then A waits on
+-- advisory(owner, B). Serializing all dialog read-model writers of one owner
+-- behind one key makes the lock ordering total per owner and Postgres reports
+-- no 40P01. Every per-row dialog trigger funnels into telesrv_bump_dialog_light,
+-- so a single lock covers channel dialogs, private dialogs, channel-membership
+-- dialog bumps and contact bumps. The membership batch path keeps its
+-- deterministic ORDER BY lock order (0196) and does not contend through this
+-- helper; the lock is reentrant within a transaction, so a statement that
+-- bumps several peers of the same owner acquires it only once.
 
 CREATE OR REPLACE FUNCTION public.telesrv_bump_dialog_light(
     p_owner_user_id bigint,
@@ -32,8 +38,7 @@ BEGIN
     END IF;
 
     PERFORM pg_advisory_xact_lock(
-        hashint8(p_owner_user_id),
-        hashint8(p_peer_id)
+        hashtextextended('telesrv_dialog_owner:' || p_owner_user_id, 0)
     );
 
     PERFORM public.telesrv_bump_read_model_version(

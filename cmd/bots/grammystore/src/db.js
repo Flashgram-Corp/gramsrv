@@ -682,12 +682,21 @@ export class BotDatabase {
   }
 
   async closeSupportMessage(ticketID, answeredBy = 0, answer = "") {
-    await this.pool.query("UPDATE support_messages SET status = 'answered', answered_at = $1, answered_by = $2, answer = $3 WHERE id = $4", [now(), answeredBy, answer, ticketID]);
+    // Atomic claim: only the first concurrent admin may transition the ticket
+    // open -> answered. Losing admins get rowCount 0 instead of overwriting
+    // answered_by/answer.
+    const result = await this.pool.query(
+      "UPDATE support_messages SET status = 'answered', answered_at = $1, answered_by = $2, answer = $3 WHERE id = $4 AND status = 'open'",
+      [now(), answeredBy, answer, ticketID]
+    );
+    return result.rowCount === 1;
   }
 
   async rateSupportTicket(ticketID, rating, telegramID) {
+    // A ticket can only be rated after it was answered; a forged rating on an
+    // open ticket must not block the legitimate one.
     const result = await this.pool.query(
-      "INSERT INTO support_ratings(ticket_id, rating) SELECT id, $2 FROM support_messages WHERE id = $1 AND telegram_id = $3 ON CONFLICT (ticket_id) DO NOTHING",
+      "INSERT INTO support_ratings(ticket_id, rating) SELECT id, $2 FROM support_messages WHERE id = $1 AND telegram_id = $3 AND status = 'answered' ON CONFLICT (ticket_id) DO NOTHING",
       [ticketID, rating, telegramID]
     );
     return result.rowCount === 1;

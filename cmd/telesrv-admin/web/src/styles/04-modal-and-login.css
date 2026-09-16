@@ -340,6 +340,11 @@
   margin-bottom: 14px;
 }
 
+.operator-identity .form-field input {
+  width: 100%;
+  min-width: 0;
+}
+
 .permission-groups {
   display: grid;
   max-height: 52vh;
@@ -364,14 +369,22 @@
   gap: 10px;
 }
 
+.permission-group-head > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
 .permission-group-head strong {
   color: var(--heading);
   font-size: 13px;
+  line-height: 1.25;
 }
 
 .permission-group-head small {
   color: var(--muted);
   font-size: 12px;
+  line-height: 1.35;
 }
 
 .permission-grid {
@@ -397,7 +410,13 @@
 }
 
 .permission-item input[type="checkbox"] {
-  margin-top: 3px;
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: var(--brand);
+  cursor: pointer;
 }
 
 .permission-item input[type="checkbox"]:disabled {
@@ -406,6 +425,7 @@
 
 .permission-copy {
   display: grid;
+  min-width: 0;
   gap: 2px;
 }
 

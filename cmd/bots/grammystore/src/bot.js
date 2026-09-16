@@ -993,16 +993,19 @@ export function createBot({ config, db, gramsrv }) {
       if (ticketMatch) {
         const ticketID = Number(ticketMatch[1]);
         const ticket = await db.supportMessage(ticketID);
-        if (ticket?.status === "open") {
-          if (!input) return ctx.reply(tr(ctx.from.id, "errorEmptyReply"));
-          const assignedTo = String(ctx.from.id);
-          await bot.api.sendMessage(ticket.telegram_id, tr(ticket.telegram_id, "supportReply", { ticket: ticketID, answer: escapeHTML(input) }), { parse_mode: "HTML" });
-          await db.closeSupportMessage(ticketID, assignedTo, input);
-          await notifyOtherAdmins(ctx.from.id, ticketID);
-          await sendRatingPrompt(ticketID, ticket.telegram_id);
-          return ctx.reply(tr(ctx.from.id, "supportReplySent", { ticket: ticketID }), { reply_markup: adminKeyboard(language) });
+        if (!ticket) return ctx.reply(tr(ctx.from.id, "errorTicketMissing"));
+        if (!input) return ctx.reply(tr(ctx.from.id, "errorEmptyReply"));
+        const assignedTo = String(ctx.from.id);
+        // Atomic claim: only the first admin wins the open -> answered
+        // transition; a loser must not deliver a second answer over it.
+        const claimed = await db.closeSupportMessage(ticketID, assignedTo, input);
+        if (!claimed) {
+          return ctx.reply(tr(ctx.from.id, "supportAlreadyAnswered", { ticket: ticketID }), { reply_markup: adminKeyboard(language) });
         }
-        return ctx.reply(tr(ctx.from.id, "errorTicketMissing"));
+        await bot.api.sendMessage(ticket.telegram_id, tr(ticket.telegram_id, "supportReply", { ticket: ticketID, answer: escapeHTML(input) }), { parse_mode: "HTML" });
+        await notifyOtherAdmins(ctx.from.id, ticketID);
+        await sendRatingPrompt(ticketID, ticket.telegram_id);
+        return ctx.reply(tr(ctx.from.id, "supportReplySent", { ticket: ticketID }), { reply_markup: adminKeyboard(language) });
       }
     }
 
@@ -1283,8 +1286,15 @@ export function createBot({ config, db, gramsrv }) {
         if (!Number.isSafeInteger(ticketID) || ticketID <= 0) throw new Error("invalid ticket ID");
         const ticket = await db.supportMessage(ticketID);
         if (!ticket || !answer) throw new Error("ticket not found or reply is empty");
+        // Atomic claim: a concurrent admin who already answered keeps the
+        // ticket; the loser is told instead of overwriting answered_by/answer.
+        const claimed = await db.closeSupportMessage(ticketID, String(ctx.from.id), answer);
+        if (!claimed) {
+          await db.clearPending(ctx.from.id);
+          return adminResult(tr(ctx.from.id, "supportAlreadyAnswered", { ticket: ticketID }));
+        }
         await bot.api.sendMessage(ticket.telegram_id, tr(ticket.telegram_id, "supportReply", { ticket: ticketID, answer: escapeHTML(answer) }), { parse_mode: "HTML" });
-        await db.closeSupportMessage(ticketID, String(ctx.from.id), answer); await db.clearPending(ctx.from.id);
+        await db.clearPending(ctx.from.id);
         await notifyOtherAdmins(ctx.from.id, ticketID);
         await sendRatingPrompt(ticketID, ticket.telegram_id);
         return adminResult(tr(ctx.from.id, "supportReplySent", { ticket: ticketID }));
