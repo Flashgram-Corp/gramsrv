@@ -261,6 +261,13 @@ func TestAuditTrailRecordsAndListsThroughTheRoutes(t *testing.T) {
 	operator := "carol" + suffix
 	password := "password-" + suffix
 
+	// The audit tables are shared across the integration suite, so this test
+	// owns a namespace -- its actor -- rather than assuming the tables start
+	// empty. Wipe that namespace before asserting exact counts, and again in
+	// the cleanup below, so a prior partial run (or a re-run against a reused
+	// database) can never decide whether the route works.
+	_, _ = store.pool.Exec(ctx, `DELETE FROM admin_commands WHERE actor = $1`, "audit-tester")
+	_, _ = store.pool.Exec(ctx, `DELETE FROM admin_audit_logs WHERE actor = $1`, "audit-tester")
 	t.Cleanup(func() {
 		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_console_users WHERE username = $1`, operator)
 		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_audit_logs WHERE actor = $1`, "audit-tester")
@@ -287,7 +294,9 @@ func TestAuditTrailRecordsAndListsThroughTheRoutes(t *testing.T) {
 	srv.recordAgentCommand(req, mk(1), "set-admin-operator-password", "completed", &ok, nil)
 	srv.recordAgentCommand(req, mk(2), "set-admin-operator-access", "failed", nil, errors.New("boom"))
 
-	got, err := store.listAuditLogs(ctx, "", "", "", 10)
+	// Scoped to this test's actor: unfiltered would also see rows written by
+	// every other bar following the same global table, which is theirs to own.
+	got, err := store.listAuditLogs(ctx, "audit-tester", "", "", 10)
 	if err != nil {
 		t.Fatalf("list audit logs: %v", err)
 	}
@@ -324,14 +333,14 @@ func TestAuditTrailRecordsAndListsThroughTheRoutes(t *testing.T) {
 	if rows := filter("actor=audit-tester"); len(rows) != 2 {
 		t.Fatalf("actor filter rows=%d, want 2", len(rows))
 	}
-	if rows := filter("status=failed"); len(rows) != 1 || rows[0].Status != "failed" {
+	if rows := filter("actor=audit-tester&status=failed"); len(rows) != 1 || rows[0].Status != "failed" {
 		t.Fatalf("status filter rows=%+v", rows)
 	}
-	if rows := filter("action=set-admin-operator-password"); len(rows) != 1 {
+	if rows := filter("actor=audit-tester&action=set-admin-operator-password"); len(rows) != 1 {
 		t.Fatalf("action filter rows=%d, want 1", len(rows))
 	}
 	// A limit below the row count slices newest-first.
-	if rows := filter("limit=1"); len(rows) != 1 || rows[0].Action != "set-admin-operator-access" {
+	if rows := filter("actor=audit-tester&limit=1"); len(rows) != 1 || rows[0].Action != "set-admin-operator-access" {
 		t.Fatalf("limit filter rows=%+v", rows)
 	}
 }
