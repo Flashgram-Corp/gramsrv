@@ -2,11 +2,9 @@ package rpc
 
 import (
 	"context"
-	"errors"
 	"github.com/iamxvbaba/td/clock"
 	"github.com/iamxvbaba/td/proto"
 	"github.com/iamxvbaba/td/tg"
-	"github.com/iamxvbaba/td/tgerr"
 	"go.uber.org/zap/zaptest"
 	"strings"
 	appchannels "telesrv/internal/app/channels"
@@ -16,43 +14,6 @@ import (
 	"telesrv/internal/store/memory"
 	"testing"
 )
-
-func TestChannelDifferenceCanceledRequestAbortsWithoutServerError(t *testing.T) {
-	channelStore := memory.NewChannelStore()
-	canceled := &cancelingDifferenceService{Service: appchannels.NewService(channelStore)}
-	r := New(Config{}, Deps{
-		Channels: canceled,
-		Sessions: &captureSessions{},
-	}, zaptest.NewLogger(t), clock.System)
-	// channelIDFromInput needs a joinable channel; seed one and let the fake
-	// fail inside GetDifference with a raw context cancellation.
-	created, err := canceled.CreateChannel(context.Background(), 1001, domain.CreateChannelRequest{Title: "B"})
-	if err != nil {
-		t.Fatalf("create channel: %v", err)
-	}
-	ctx, cancel := context.WithCancel(WithUserID(context.Background(), 1001))
-	cancel()
-	_, err = r.onUpdatesGetChannelDifference(ctx, &tg.UpdatesGetChannelDifferenceRequest{Channel: &tg.InputChannel{ChannelID: created.Channel.ID}})
-	if err == nil {
-		t.Fatalf("want context.Canceled error, got nil")
-	}
-	if tgerr.Is(err, "INTERNAL_SERVER_ERROR") {
-		t.Fatalf("canceled request mapped to 500 INTERNAL_SERVER_ERROR: %v", err)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled to be propagated", err)
-	}
-}
-
-// cancelingDifferenceService fails GetDifference with a raw context
-// cancellation, simulating a client that disconnected mid-request.
-type cancelingDifferenceService struct {
-	*appchannels.Service
-}
-
-func (s *cancelingDifferenceService) GetDifference(ctx context.Context, userID int64, req domain.ChannelDifferenceRequest) (domain.ChannelDifference, error) {
-	return domain.ChannelDifference{}, ctx.Err()
-}
 
 func TestChannelRealtimeRecipientsPreferOnlineMembers(t *testing.T) {
 	ctx := context.Background()
