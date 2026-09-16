@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -143,6 +144,31 @@ func assignablePermissions() []string {
 		permissionAuditRead,
 		permissionAdminsManage,
 	}
+}
+
+// validatePermissions refuses anything the operator-accounts routes cannot
+// grant: the wildcard (reserved for the break-glass login set in the
+// environment) and names outside the assignable vocabulary. Being strict here
+// is what makes a permission list stored against a named account a legible
+// record of least privilege instead of a marker that silently means everything.
+func validatePermissions(permissions []string) error {
+	assignable := assignablePermissions()
+	for _, p := range permissions {
+		if p == permissionAll {
+			return fmt.Errorf("%s is not assignable to a named operator account", permissionAll)
+		}
+		found := false
+		for _, allowed := range assignable {
+			if p == allowed {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("unknown permission %q", p)
+		}
+	}
+	return nil
 }
 
 // scopedRoute is the only way an API route should be registered. Requiring the

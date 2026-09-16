@@ -5,7 +5,7 @@ import { api, errorMessage } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Alert, Badge, EmptyRow, PageFrame, QueryPanel, SectionHead } from "../components/ui";
 import { useI18n } from "../i18n";
-import { groupPermissions, permissionAll, permissionHint, permissionTitle } from "../permissions";
+import { groupPermissions, permissionHint, permissionTitle } from "../permissions";
 import { formatDate } from "../lib/format";
 import type { AdminConsoleUser, AdminConsoleSystemOperator } from "../types";
 
@@ -183,41 +183,27 @@ function PermissionChips({ permissions }: { permissions: string[] }) {
 // The raw permission string stays as each row's tooltip, so the screen never
 // hides what is actually being stored.
 //
-// "*" gets its own row rather than a box in the grid below, because the server
-// deliberately leaves it out of the assignable list -- without this row an
-// operator holding the wildcard would render as every box unticked while Has()
-// answers true for everything, with no way to take it away again. While it is
-// on, the grid below is disabled: the server collapses "*" plus anything back
-// to just "*", so ticking a box there would be a no-op the screen would
-// otherwise show as a change.
+// The wildcard has deliberately no box here: the server refuses to grant "*"
+// to a named account (security.go validatePermissions), so the editor offers
+// the assignable list and nothing else. An account that predates this and
+// still holds "*" renders as its chips in the table and keeps the marker until
+// an operator edits it into an explicit list -- which is exactly the
+// migration path. The chips are read-only display; Has() answering true for
+// everything is how "*" has always behaved.
 function PermissionPicker({
   available,
   selected,
   onToggle,
-  onToggleGroup,
-  onToggleAll
+  onToggleGroup
 }: {
   available: string[];
   selected: string[];
   onToggle: (permission: string, on: boolean) => void;
   onToggleGroup: (permissions: string[], on: boolean) => void;
-  onToggleAll: (on: boolean) => void;
 }) {
   const { t } = useI18n();
-  const full = selected.includes(permissionAll);
   return (
     <div className="permission-groups">
-      <section className="permission-group">
-        <div className="permission-grid">
-          <label className="permission-item" title={permissionAll}>
-            <input type="checkbox" checked={full} onChange={(event) => onToggleAll(event.target.checked)} />
-            <span className="permission-copy">
-              <strong>{t("operators.fullAccess")}</strong>
-              <small>{t("operators.fullAccessHint")}</small>
-            </span>
-          </label>
-        </div>
-      </section>
       {groupPermissions(available).map((group) => {
         const all = group.permissions.length > 0 && group.permissions.every((p) => selected.includes(p));
         return (
@@ -230,7 +216,6 @@ function PermissionPicker({
               <button
                 className="btn compact-btn"
                 type="button"
-                disabled={full}
                 onClick={() => onToggleGroup(group.permissions, !all)}
               >
                 {all ? t("operators.clear") : t("operators.selectAll")}
@@ -241,8 +226,7 @@ function PermissionPicker({
                 <label className="permission-item" key={permission} title={permission}>
                   <input
                     type="checkbox"
-                    checked={full || selected.includes(permission)}
-                    disabled={full}
+                    checked={selected.includes(permission)}
                     onChange={(event) => onToggle(permission, event.target.checked)}
                   />
                   <span className="permission-copy">
@@ -342,11 +326,6 @@ function OperatorModal({
                 on
                   ? [...current, ...group.filter((p) => !current.includes(p))]
                   : current.filter((p) => !group.includes(p))
-              )
-            }
-            onToggleAll={(on) =>
-              setPermissions((current) =>
-                on ? [permissionAll] : current.filter((p) => p !== permissionAll)
               )
             }
           />
