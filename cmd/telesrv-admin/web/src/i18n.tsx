@@ -139,7 +139,7 @@ const translations: Record<Language, Record<string, string>> = {
     "operators.appliesNextRequest": "The new access applies from this operator's next request. They stay signed in.",
     "operators.usernameField": "Username",
     "operators.passwordField": "Password",
-    "operators.usernamePlaceholder": "letters, digits, dot, dash or underscore",
+    "operators.usernamePlaceholder": "letters, digits, . - _",
     "operators.newPassword": "New password",
     "operators.setPassword": "Set password",
     "operators.passwordBumps": "Changing the password signs this operator out of any session they already have.",
