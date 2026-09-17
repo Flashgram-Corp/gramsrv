@@ -702,6 +702,16 @@ func TestUsernameRPCLifecycle(t *testing.T) {
 	if err != nil || ok {
 		t.Fatalf("check occupied = ok %v err %v, want false/nil", ok, err)
 	}
+	// Invalid and free usernames are answered with a boolean, never a hard
+	// RPC error, because clients poll while typing and treat both identically.
+	ok, err = r.onAccountCheckUsername(reqCtx, "ab")
+	if err != nil || ok {
+		t.Fatalf("check invalid = ok %v err %v, want false/nil", ok, err)
+	}
+	ok, err = r.onAccountCheckUsername(reqCtx, "brand_new_name")
+	if err != nil || !ok {
+		t.Fatalf("check free = ok %v err %v, want true/nil", ok, err)
+	}
 	user, err := r.onAccountUpdateUsername(reqCtx, "owner_name")
 	if err != nil {
 		t.Fatalf("update username: %v", err)

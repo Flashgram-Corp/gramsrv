@@ -600,6 +600,9 @@ func (r *Router) registerMessages(d *tlprofile.Dispatcher) {
 	registerRPC[*tg.MessagesGetRichMessageRequest](d, tlprofile.SemanticMethodMessagesGetRichMessage, func(ctx context.Context, layerRequest *tg.MessagesGetRichMessageRequest) (any, error) {
 		return r.onMessagesGetRichMessage(ctx, layerRequest)
 	})
+	registerRPC[*tg.MessagesGetExtendedMediaRequest](d, tlprofile.SemanticMethodMessagesGetExtendedMedia, func(ctx context.Context, layerRequest *tg.MessagesGetExtendedMediaRequest) (any, error) {
+		return r.onMessagesGetExtendedMedia(ctx, layerRequest)
+	})
 	registerRPC[*tg.MessagesGetHistoryRequest](d, tlprofile.SemanticMethodMessagesGetHistory, func(ctx context.Context, req *tg.MessagesGetHistoryRequest) (any, error) {
 		userID, _, err := r.currentUserID(ctx)
 		if err != nil {
