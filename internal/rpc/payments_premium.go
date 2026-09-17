@@ -35,7 +35,6 @@ func (r *Router) onPaymentsGetPremiumGiftCodeOptions(
 			if _, err := r.checkedDomainPeerFromInputPeer(ctx, userID, peer); err != nil {
 				return nil, err
 			}
-			return nil, tgerr.New(400, "BOOST_PEER_INVALID")
 		}
 	}
 	plans, err := r.deps.Premium.Plans(ctx)
@@ -126,6 +125,11 @@ func (r *Router) premiumPaymentForm(
 			Description: invoice.Description, Invoice: wireInvoice,
 			Users: tgUsersForViewer(userID, users),
 		}, nil
+	}
+	// The fiat Premium form is the local dev checkout; denied by default so
+	// production never grants Premium without a real XTR payment.
+	if err := r.devPaymentsErr(); err != nil {
+		return nil, err
 	}
 	users = append(users, domain.OfficialSystemUser())
 	wireInvoice.Test = true

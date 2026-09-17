@@ -1541,6 +1541,7 @@ func run(logger *zap.Logger) error {
 		UpdatePublicURL:          cfg.UpdatePublicURL,
 		PublicAppScheme:          cfg.PublicAppScheme,
 		PublicAppLinkBase:        cfg.PublicAppLinkBase,
+		AllowDevPayments:         cfg.AllowDevPayments,
 		// PFS temp→perm 解析缓存：显式撤销会清缓存并断开连接，re-bind 即时失效；
 		// 配置 TTL 只承担跨进程/异常失效兜底，避免大连接数周期性打满 PG。
 		TempKeyResolveCacheTTL:         cfg.TempKeyResolveCacheTTL,
@@ -1843,6 +1844,7 @@ func run(logger *zap.Logger) error {
 		AppLinkBase:        cfg.PublicAppLinkBase,
 		WebBaseURL:         cfg.PublicWebBaseURL,
 		AppName:            cfg.PublicAppName,
+		AllowDevPayments:   cfg.AllowDevPayments,
 		StickerSets:        filesService,
 		Users:              userStore,
 		Channels:           channelStore,

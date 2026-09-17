@@ -91,7 +91,7 @@ func TestBotAPIGiftPremiumSubscriptionUsesCatalogAndStableRequestKey(t *testing.
 			Balance: domain.StarsBalance{UserID: bot.ID, Balance: 250},
 		},
 	}
-	router := New(Config{}, Deps{
+	router := New(Config{AllowDevPayments: true}, Deps{
 		Users:   appusers.NewService(users),
 		Premium: premium,
 	}, zaptest.NewLogger(t), fixedClock{now: time.Unix(1_800_000_000, 0)})
@@ -135,7 +135,7 @@ func premiumRPCTestRouter(t *testing.T) (*Router, *fakePremiumRPCService, *memor
 		SortOrder: 10, Label: "3 months", Version: 2,
 	}}}
 	now := time.Unix(1_800_000_000, 0)
-	router := New(Config{}, Deps{
+	router := New(Config{AllowDevPayments: true}, Deps{
 		Users:   appusers.NewService(users),
 		Premium: premium,
 	}, zaptest.NewLogger(t), fixedClock{now: now})
