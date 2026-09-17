@@ -380,6 +380,15 @@ export class BotDatabase {
     return Number.isSafeInteger(value) && value >= 0 ? value : 0;
   }
 
+  async wheelLimits(c = this.pool) {
+    const query = async (key, fallback) => {
+      const res = await c.query("SELECT value FROM settings WHERE key = $1", [key]);
+      const value = Number(res.rows[0]?.value ?? fallback);
+      return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+    };
+    return { daily: await query("wheel_daily_limit", 1), weekly: await query("wheel_weekly_limit", 5) };
+  }
+
   async freeNumberDailyCount(ownerID) {
     const me = (await this.pool.query("SELECT free_day, free_day_count FROM users WHERE telegram_id = $1", [ownerID])).rows[0] ?? null;
     if (!me || me.free_day !== dayKey()) return 0;
@@ -448,8 +457,9 @@ export class BotDatabase {
       }
       const dayCount = user.spin_day === day ? user.spin_day_count : 0;
       const weekCount = user.spin_week === week ? user.spin_week_count : 0;
-      if (dayCount >= 1) throw new Error("daily spin limit reached");
-      if (weekCount >= 5) throw new Error("weekly spin limit reached");
+      const limits = await this.wheelLimits(client);
+      if (limits.daily > 0 && dayCount >= limits.daily) throw new Error("daily spin limit reached");
+      if (limits.weekly > 0 && weekCount >= limits.weekly) throw new Error("weekly spin limit reached");
       await client.query(
         "UPDATE users SET spin_day = $1, spin_day_count = $2, spin_week = $3, spin_week_count = $4, updated_at = $5 WHERE telegram_id = $6",
         [day, dayCount + 1, week, weekCount + 1, now(), id]

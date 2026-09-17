@@ -226,7 +226,7 @@ export function adminKeyboard(language) {
     .text(translate(language, "adminFreezeButton"), "admin:freeze").text(translate(language, "adminScamButton"), "admin:scam").text(translate(language, "adminFakeButton"), "admin:fake").row()
     .text(translate(language, "adminInvoiceButton"), "admin:invoice").text(translate(language, "adminRefundButton"), "admin:refund").row()
     .text(translate(language, "adminReplyButton"), "admin:reply").text(translate(language, "adminPricesButton"), "admin:prices").row()
-    .text(translate(language, "adminPromoButton"), "admin:promo").text(translate(language, "adminGiveawayButton"), "admin:giveaway").row()
+    .text(translate(language, "adminPromoButton"), "admin:promo").text(translate(language, "adminGiveawayButton"), "admin:giveaway").text(translate(language, "adminWheelButton"), "admin:wheel").row()
     .text(translate(language, "adminAccessButton"), "admin:access").text(translate(language, "back"), "menu:home");
 }
 
@@ -879,6 +879,11 @@ export function createBot({ config, db, gramsrv }) {
       await db.finishSpin(ctx.from.id, award.day);
       await editOrReply(ctx, tr(ctx.from.id, "wheelWon", { amount: award.prize }), backKeyboard(language, "menu:bonuses"));
     } catch (error) {
+      // Expected user rejections (limits/pending spin) are a normal reply, not
+      // an operational failure — keep them out of the error log.
+      if (/daily spin limit reached|weekly spin limit reached|finish the pending spin/i.test(String(error?.message ?? error ?? ""))) {
+        return editOrReply(ctx, translateError(language, error), backKeyboard(language, "menu:bonuses"));
+      }
       console.error("Wheel grant failed", error);
       await editOrReply(ctx, translateError(language, error), backKeyboard(language, "menu:bonuses"));
     }
@@ -928,6 +933,11 @@ export function createBot({ config, db, gramsrv }) {
       lines.push(`<code>free ${await db.freeNumberDailyLimit()}</code>`);
       await db.setPending(ctx.from.id, "admin_prices");
       return editOrReply(ctx, `${tr(ctx.from.id, "adminPromptPrices", { rate: String(starsRate) })}\n\n${lines.join("\n")}`, backKeyboard(language, "admin:menu"));
+    }
+    if (action === "wheel") {
+      const limits = await db.wheelLimits();
+      await db.setPending(ctx.from.id, "admin_wheel");
+      return editOrReply(ctx, tr(ctx.from.id, "adminPromptWheel", { daily: String(limits.daily), weekly: String(limits.weekly) }), backKeyboard(language, "admin:menu"));
     }
     if (action === "grants") return editOrReply(ctx, tr(ctx.from.id, "adminGrantsTitle"), adminGrantsKeyboard(language));
     if (action === "stats") {
@@ -1338,6 +1348,24 @@ export function createBot({ config, db, gramsrv }) {
         }
         await db.clearPending(ctx.from.id);
         return adminResult(tr(ctx.from.id, "pricesSaved", { count: updated }));
+      }
+      if (pending.kind === "admin_wheel") {
+        const lines = input.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+        if (!lines.length) throw new Error("invalid wheel limit");
+        let updated = 0;
+        for (const line of lines) {
+          const parts = line.split(/\s+/);
+          if (parts.length !== 2) throw new Error("invalid wheel limit");
+          const [key, valueRaw] = parts;
+          const value = Number(valueRaw);
+          if (!Number.isSafeInteger(value) || value < 0 || value > 1000) throw new Error("invalid wheel limit");
+          if (key === "daily") { await db.setSetting("wheel_daily_limit", value); updated++; }
+          else if (key === "weekly") { await db.setSetting("wheel_weekly_limit", value); updated++; }
+          else throw new Error("invalid wheel limit");
+        }
+        const limits = await db.wheelLimits();
+        await db.clearPending(ctx.from.id);
+        return adminResult(tr(ctx.from.id, "wheelSaved", { daily: String(limits.daily), weekly: String(limits.weekly) }));
       }
     } catch (error) {
       console.error("Bot input action failed", pending.kind, error);
