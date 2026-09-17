@@ -875,8 +875,8 @@ export function createBot({ config, db, gramsrv }) {
     }
     try {
       const award = await db.reserveSpin(ctx.from.id, user.server_user_id, rollPrize());
-      await gramsrv.grantStars(user.server_user_id, award.prize, "Daily bot wheel", `spin:${ctx.from.id}:${award.day}`);
-      await db.finishSpin(ctx.from.id, award.day);
+      await gramsrv.grantStars(user.server_user_id, award.prize, "Daily bot wheel", `spin:${ctx.from.id}:${award.spin_key}`);
+      await db.finishSpin(ctx.from.id, award.spin_key);
       await editOrReply(ctx, tr(ctx.from.id, "wheelWon", { amount: award.prize }), backKeyboard(language, "menu:bonuses"));
     } catch (error) {
       // Expected user rejections (limits/pending spin) are a normal reply, not

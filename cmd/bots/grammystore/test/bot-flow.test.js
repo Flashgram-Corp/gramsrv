@@ -103,7 +103,7 @@ function mockDb() {
     clearPending: async (id) => { pendingState.delete(id); },
     recentRecipients: async () => [],
     rememberRecipient: async () => {},
-    reserveSpin: async () => ({ prize: 50, day: "2026-01-01" }),
+    reserveSpin: async () => ({ prize: 50, day: "2026-01-01", spin_key: "mock-spin" }),
     finishSpin: async () => {},
     createPromo: async (code) => code,
     claimPromo: async (code, id) => ({ stars_amount: 50 }),

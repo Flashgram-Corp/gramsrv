@@ -98,8 +98,67 @@ test("code access, support replies, refunds and pending wheel awards are durable
   const reserved = await db.reserveSpin(1, 100, 50);
   const sameSpin = await db.reserveSpin(1, 100, 999);
   assert.equal(sameSpin.prize, 50);
-  await db.finishSpin(1, reserved.day);
+  assert.equal(sameSpin.spin_key, reserved.spin_key, "an un-finished spin resumes with the same identity");
+  await db.finishSpin(1, reserved.spin_key);
   await assert.rejects(() => db.reserveSpin(1, 100, 50));
+});
+
+test("wheel limits count actual spins: daily >1 and unlimited daily with a weekly cap", async () => {
+  if (!db) return;
+  await cleanTable("spin_awards"); await cleanTable("users");
+  await db.upsertUser({ id: 1, first_name: "Owner" }, 10, "ru");
+  try {
+    await db.setSetting("wheel_daily_limit", 2);
+    await db.setSetting("wheel_weekly_limit", 5);
+    const first = await db.reserveSpin(1, 10, 50);
+    await db.finishSpin(1, first.spin_key);
+    const second = await db.reserveSpin(1, 10, 75);
+    assert.notEqual(second.spin_key, first.spin_key, "a second spin the same day gets its own identity");
+    await db.finishSpin(1, second.spin_key);
+    await assert.rejects(() => db.reserveSpin(1, 10, 50), /daily spin limit reached/);
+  } finally {
+    await db.pool.query("DELETE FROM settings WHERE key = 'wheel_daily_limit'");
+  }
+
+  await cleanTable("spin_awards");
+  try {
+    // 0 daily means no daily cap at all; the weekly limit still binds.
+    await db.setSetting("wheel_daily_limit", 0);
+    await db.setSetting("wheel_weekly_limit", 3);
+    const keys = new Set();
+    for (let i = 0; i < 3; i++) {
+      const award = await db.reserveSpin(1, 10, 40);
+      keys.add(award.spin_key);
+      await db.finishSpin(1, award.spin_key);
+    }
+    assert.equal(keys.size, 3, "each granted spin carries a unique identity");
+    await assert.rejects(() => db.reserveSpin(1, 10, 40), /weekly spin limit reached/);
+  } finally {
+    await db.pool.query("DELETE FROM settings WHERE key = 'wheel_daily_limit' OR key = 'wheel_weekly_limit'");
+  }
+});
+
+test("concurrent wheel taps reserve one award and an interrupted grant resumes it", async () => {
+  if (!db) return;
+  await cleanTable("spin_awards"); await cleanTable("users");
+  await db.upsertUser({ id: 1, first_name: "Owner" }, 10, "ru");
+  const [a, b] = await Promise.all([db.reserveSpin(1, 10, 50), db.reserveSpin(1, 10, 70)]);
+  assert.equal(a.spin_key, b.spin_key, "two simultaneous taps share one pending award");
+  assert.equal(a.prize, b.prize);
+  const rows = await db.pool.query("SELECT * FROM spin_awards WHERE telegram_id = 1");
+  assert.equal(rows.rowCount, 1, "no double award for concurrent taps");
+  assert.equal(rows.rows[0].status, "pending");
+
+  // Simulate a grant interrupted the previous day: the retry must resume the
+  // exact same award instead of burning a fresh daily slot.
+  await db.pool.query("UPDATE spin_awards SET day = '2000-01-01', week = '2000-W01' WHERE spin_key = $1", [a.spin_key]);
+  const retry = await db.reserveSpin(1, 10, 999);
+  assert.equal(retry.spin_key, a.spin_key);
+  assert.equal(retry.prize, 50);
+  await db.finishSpin(1, retry.spin_key);
+  const fresh = await db.reserveSpin(1, 10, 60);
+  assert.notEqual(fresh.spin_key, a.spin_key, "after finishing, a new spin is reserved for the new day");
+  await db.finishSpin(1, fresh.spin_key);
 });
 
 test("refunding a paid number retires it and restores a fresh free number", async () => {
@@ -365,10 +424,10 @@ test("admin exact lookups return correct data", async () => {
 test("startup migrations apply once, record checksums, and skip applied files", async () => {
   if (!db) return;
   const first = await applyMigrations(db.connectionString);
-  assert.ok(first.includes("007-support-tickets-extended.sql"));
-  assert.equal(first.length, 7, "every migration runs once on a fresh schema");
+  assert.ok(first.includes("008-spin-awards-identity.sql"));
+  assert.equal(first.length, 8, "every migration runs once on a fresh schema");
   const ledger = await db.pool.query("SELECT version, checksum FROM schema_migrations ORDER BY version");
-  assert.equal(ledger.rowCount, 7, "every applied migration is recorded in the ledger");
+  assert.equal(ledger.rowCount, 8, "every applied migration is recorded in the ledger");
   assert.match(ledger.rows[0].checksum, /^[0-9a-f]{64}$/);
   const second = await applyMigrations(db.connectionString);
   assert.deepEqual(second, [], "already-applied migrations are skipped on later boots");
@@ -378,4 +437,6 @@ test("startup migrations apply once, record checksums, and skip applied files", 
   assert.equal(rating.rowCount, 1);
   const answeredBy = await db.pool.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'support_messages' AND column_name = 'answered_by'`);
   assert.equal(answeredBy.rowCount, 1);
+  const spinKeyColumn = await db.pool.query(`SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'spin_awards' AND column_name = 'spin_key'`);
+  assert.equal(spinKeyColumn.rowCount, 1);
 });
