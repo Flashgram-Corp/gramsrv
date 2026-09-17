@@ -31,6 +31,38 @@ func TestCloneUsersDoesNotSharePhotoStripped(t *testing.T) {
 	}
 }
 
+func TestProjectorPhoneVisibleToStrangerUnderAllowAll(t *testing.T) {
+	ctx := context.Background()
+	const (
+		viewerID = int64(8201)
+		ownerID  = int64(8202)
+	)
+	contacts := memory.NewContactStore()
+	rules := memory.NewPrivacyStore()
+	privacy := privacyapp.NewService(rules, contacts)
+	if _, err := privacy.SetRules(ctx, ownerID, domain.PrivacyKeyPhoneNumber, []domain.PrivacyRule{{Kind: domain.PrivacyRuleAllowAll}}); err != nil {
+		t.Fatalf("set privacy: %v", err)
+	}
+	projector := New(WithContactStore(contacts), WithPrivacyEvaluator(privacy))
+	base := []domain.User{{ID: ownerID, Phone: "15550008202", FirstName: "Owner"}}
+
+	single, err := projector.ForViewer(ctx, viewerID, base)
+	if err != nil {
+		t.Fatalf("ForViewer: %v", err)
+	}
+	if owner := projectionUser(t, single, ownerID); owner.Phone != "15550008202" {
+		t.Fatalf("allow-all stranger phone = %q, want visible", owner.Phone)
+	}
+
+	fanout, err := projector.ForViewers(ctx, []int64{viewerID}, base)
+	if err != nil {
+		t.Fatalf("ForViewers: %v", err)
+	}
+	if owner := projectionUser(t, fanout[viewerID], ownerID); owner.Phone != "15550008202" {
+		t.Fatalf("allow-all fanout stranger phone = %q, want visible", owner.Phone)
+	}
+}
+
 func TestProjectorCollectiblePhonePrivacyAndExclusiveOverride(t *testing.T) {
 	ctx := context.Background()
 	const viewerID int64 = 8101
