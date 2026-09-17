@@ -93,6 +93,7 @@ Retained typed graphs remain charged to the RPC scheduler budget above.
 | `TELESRV_PUBLIC_WEB_BASE_URL` | HTTP(S) URL / `https://weba.telesrv.net` | Web-client root used by public username pages. Same URL validation as `TELESRV_PUBLIC_BASE_URL`. |
 | `TELESRV_PUBLIC_APP_NAME` | string / `TELESRV_BRAND_PRODUCT_NAME` | Public landing-page product name; trimmed, non-empty, no control characters, maximum 64 Unicode characters. |
 | `TELESRV_PUBLIC_LINK_WEB_ADDR` | nullable address / empty | Username/avatar/sticker/emoji/chatlist/collectible-gift landing pages, the hash-only moderation appeal form, and short-lived unique-gift/channel-revenue confirmation pages. Empty disables the listener; moderation `freeze_account` actions, local gift export, and channel revenue withdrawal then fail closed because telesrv cannot issue a reachable confirmation URL. Public landing pages remain read-only; only exact bearer-token POST routes can commit their aggregate. Production should bind loopback behind exact nginx routes with token-route access logs disabled. `.env.example` enables `127.0.0.1:2401` for development. |
+| `TELESRV_ALLOW_DEV_PAYMENTS` | bool / `false` | Serve the local dev/fiat Stars/Premium checkout (`/payments/dev-stars`). Denied by default so production never mints Stars or Premium without a real XTR payment; enable only in dev/test environments. |
 | `TELESRV_TELEGRAM_LOGIN_ENABLE` | bool / `false` | Mount the self-hosted Telegram Login/OIDC provider on `TELESRV_PUBLIC_LINK_WEB_ADDR`. Enabling it requires that listener and all key files below. |
 | `TELESRV_TELEGRAM_LOGIN_ISSUER` | absolute origin URL / `TELESRV_PUBLIC_BASE_URL` | Exact public issuer used in discovery and tokens. HTTPS is required by default; paths, credentials, query, and fragment are rejected. The next setting permits any HTTP host/IP. |
 | `TELESRV_TELEGRAM_LOGIN_ALLOW_HTTP` | bool / `false` | When enabled, permits any valid HTTP issuer, BotFather Web origin, redirect URI, and native HTTP callback, without loopback, subnet, or port restrictions. When disabled, those Web URLs still require HTTPS. |
@@ -815,7 +816,7 @@ that cannot do what it says fails startup instead of being silently unreachable.
 | `TELESRV_TURN_RELAY_MIN_PORT` | int / `12500` | Inclusive relay allocation port minimum. |
 | `TELESRV_TURN_RELAY_MAX_PORT` | int / `12999` | Inclusive relay allocation port maximum; must not be below the minimum. Open the whole range in the firewall. |
 | `TELESRV_CALL_TURN_CREDENTIAL_TTL` | duration / `6h` | Per-call TURN credential lifetime. |
-| `TELESRV_CALL_FORCE_RELAY` | bool / `false` | Forces `p2p_allowed=false` to test TURN relay paths. |
+| `TELESRV_CALL_FORCE_RELAY` | bool / `false` | Forces `p2p_allowed=false` to test TURN relay paths. Private-call P2P is contacts-only by default (see TURN section): unless the two parties are reciprocal contacts, `p2p_allowed=false` always, so stranger callers can never learn each other's real IP. |
 | `TELESRV_SFU_ENABLE` | bool / `true` | Enables embedded group-call media forwarding. False leaves signaling-only M0 behavior. |
 | `TELESRV_SFU_UDP_PORT` | int / `12399` | Pion ICE UDPMux port; allow it through the firewall. |
 | `TELESRV_SFU_ADVERTISE_IP` | string / empty | Client-reachable ICE candidate IP. Empty falls back to `TELESRV_ADVERTISE_IP`; loopback silently breaks real-device media. |

@@ -92,6 +92,7 @@ live expanded buffer 释放后会归还进程内存，但不会返还该 frame �
 | `TELESRV_PUBLIC_WEB_BASE_URL` | HTTP(S) URL / `https://weba.telesrv.net` | username 页面 Web 客户端入口，校验规则同 `TELESRV_PUBLIC_BASE_URL`。 |
 | `TELESRV_PUBLIC_APP_NAME` | string / `TELESRV_BRAND_PRODUCT_NAME` | 公开落地页产品名；trim 后非空、无控制字符、最多 64 个 Unicode 字符。 |
 | `TELESRV_PUBLIC_LINK_WEB_ADDR` | nullable address / 空 | username/avatar/sticker/emoji/chatlist/collectible gift 落地页、hash-only 申诉，以及 unique gift / channel revenue 短期令牌确认页监听；空值关闭，并使 moderation `freeze_account` 申诉、本地 gift export 与频道收益领取 fail-closed。公开落地页保持只读，只有精确 token POST 可提交对应 aggregate。生产应 loopback + nginx 精确反代并关闭 token 路径 access log；`.env.example` 为开发启用 `127.0.0.1:2401`。 |
+| `TELESRV_ALLOW_DEV_PAYMENTS` | bool / `false` | 提供服务本地 dev/fiat 的 Stars/Premium 结算页（`/payments/dev-stars`）。默认拒绝，生产环境不会在没有真实 XTR 支付的情况下凭空铸造 Stars/Premium；仅限 dev/test 环境开启。 |
 | `TELESRV_TELEGRAM_LOGIN_ENABLE` | bool / `false` | 在 `TELESRV_PUBLIC_LINK_WEB_ADDR` 上挂载自建 Telegram Login/OIDC Provider；启用时必须同时配置该 listener 与下列全部密钥文件。 |
 | `TELESRV_TELEGRAM_LOGIN_ISSUER` | 绝对 origin URL / `TELESRV_PUBLIC_BASE_URL` | discovery 与 token 使用的精确公开 issuer；默认必须 HTTPS，禁止 path、credentials、query、fragment。开启下一项后可直接配置任意 HTTP 域名/IP。 |
 | `TELESRV_TELEGRAM_LOGIN_ALLOW_HTTP` | bool / `false` | 开启后允许任意合法 HTTP issuer、BotFather Web origin、redirect URI 和 native HTTP callback，不限制为 loopback，也不限制 IP 网段或端口。关闭时这些 Web URL 仍必须 HTTPS。 |
@@ -726,7 +727,7 @@ active key。不要手工编辑 manifest 或 PEM，不要在各实例上分别�
 | `TELESRV_TURN_RELAY_MIN_PORT` | int / `12500` | relay 分配端口范围下界（含）。 |
 | `TELESRV_TURN_RELAY_MAX_PORT` | int / `12999` | relay 分配端口范围上界（含），不得小于下界，防火墙需放行整个范围。 |
 | `TELESRV_CALL_TURN_CREDENTIAL_TTL` | duration / `6h` | 按通话签发的 TURN credential 有效期。 |
-| `TELESRV_CALL_FORCE_RELAY` | bool / `false` | 强制 `p2p_allowed=false`，用于验证 TURN relay 路径。 |
+| `TELESRV_CALL_FORCE_RELAY` | bool / `false` | 强制 `p2p_allowed=false`，用于验证 TURN relay 路径。私聊通话 P2P 默认仅限互为联系人：除非双方互存联系人，否则恒为 `p2p_allowed=false`，陌生人之间永远无法获知对方真实 IP。 |
 | `TELESRV_SFU_ENABLE` | bool / `true` | 启用内嵌群通话媒体转发；false 保留仅信令 M0 模式。 |
 | `TELESRV_SFU_UDP_PORT` | int / `12399` | Pion ICE UDPMux 端口，必须放行防火墙。 |
 | `TELESRV_SFU_ADVERTISE_IP` | string / 空 | 下发给客户端的 ICE candidate IP；空值回退 `TELESRV_ADVERTISE_IP`，loopback 会静默破坏真机媒体。 |
