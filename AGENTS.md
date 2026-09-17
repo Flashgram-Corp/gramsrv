@@ -106,4 +106,3 @@ Binaries in `cmd/`: `telesrv` (server), `telesrv-admin` (admin dashboard), `tele
 - Some tests assert on log lines like `sfu listening` / `telesrv 服务就绪` — don't remove those readiness messages.
 - `scripts/install.sh` is git-ignored on purpose (internal deployment script, not part of the public repo). Don't add it.
 - `telesrv-admin.exe` at the repo root is a force-added artifact; ignore it.
-- There are uncommitted local changes in `internal/app/stargifts/service.go` and `internal/rpc/convert_media.go` right now — check `git status` before editing those files.
