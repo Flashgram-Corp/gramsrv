@@ -93,6 +93,11 @@ const (
 	// Account-ratings review and adjustment.
 	permissionRatingsRead   = "ratings.read"
 	permissionRatingsManage = "ratings.manage"
+	// The Stars ledger is an audit surface in its own right: balances and the
+	// signed per-account history. Read-only, so a session that only has to
+	// investigate (or clean up after) a balance bug never needs a management
+	// right to look.
+	permissionStarsRead     = "stars.read"
 	permissionDashboardRead = "dashboard.read"
 
 	// permissionSessionOnly marks the handful of routes that need a session but
@@ -132,6 +137,7 @@ func assignablePermissions() []string {
 		permissionGiftsManage,
 		permissionRatingsRead,
 		permissionRatingsManage,
+		permissionStarsRead,
 		permissionStorageRead,
 		permissionStorageManage,
 		permissionDashboardRead,

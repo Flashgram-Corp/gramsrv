@@ -557,6 +557,46 @@ export type AccountRatingDetail = {
   events: AccountRatingEventRow[] | null;
 };
 
+// The Stars audit surfaces. Every int64 is tagged `,string` on the backend, so
+// user ids, balances and transaction amounts stay decimal strings and never pass
+// through a float -- a Stars balance outgrows Number.MAX_SAFE_INTEGER almost
+// anywhere the project wants to scale.
+export type StarsAccountRow = {
+  UserID: string;
+  Phone: string;
+  Username: string;
+  FirstName: string;
+  LastName: string;
+  Balance: string;
+  Granted: boolean;
+  UpdatedAt: string;
+  TxnCount: string;
+};
+
+export type StarsTopListResponse = {
+  rows: StarsAccountRow[] | null;
+  has_more: boolean;
+  next_before_id: string;
+};
+
+export type StarsLedgerEntryRow = {
+  ID: string;
+  Amount: string;
+  Date: string;
+  Reason: string;
+  Title: string;
+  Description: string;
+  PeerType: string;
+  PeerID: string;
+};
+
+export type StarsLedgerResponse = {
+  account: StarsAccountRow;
+  entries: StarsLedgerEntryRow[] | null;
+  has_more: boolean;
+  next_before_id: string;
+};
+
 // Official platform verification. Every int64 the backend tags `,string` stays a
 // decimal string here: application ids, peer ids and the optimistic-locking
 // version all outgrow the exact range of a JSON number, and a rounded version
