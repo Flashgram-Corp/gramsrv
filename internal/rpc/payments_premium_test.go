@@ -219,6 +219,46 @@ func TestNativePremiumGiftCodeUsesFiatCheckoutAndRejectsReplay(t *testing.T) {
 	}
 }
 
+// A denied fiat checkout must be rejected up front: the reproduction used to
+// reach IssuePaymentForm first, which wrote a durable premium_payment_intents
+// row even though the request was going to fail with NOT_IMPLEMENTED.
+func TestDeniedFiatPremiumFormNeverIssuesPaymentIntent(t *testing.T) {
+	ctx := context.Background()
+	users := memory.NewUserStore()
+	buyer, err := users.Create(ctx, domain.User{AccessHash: 8301, Phone: "15550008301", FirstName: "Buyer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipient, err := users.Create(ctx, domain.User{AccessHash: 8302, Phone: "15550008302", FirstName: "Recipient"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	premium := &fakePremiumRPCService{plans: []domain.PremiumPlan{{
+		Months: 3, DurationDays: 90, AmountStars: 750, Enabled: true,
+		SortOrder: 10, Label: "3 months", Version: 2,
+	}}}
+	router := New(Config{AllowDevPayments: false}, Deps{
+		Users:   appusers.NewService(users),
+		Premium: premium,
+	}, zaptest.NewLogger(t), fixedClock{now: time.Unix(1_800_000_000, 0)})
+
+	invoice := &tg.InputInvoicePremiumGiftCode{
+		Purpose: &tg.InputStorePaymentPremiumGiftCode{
+			Users:    []tg.InputUserClass{&tg.InputUser{UserID: recipient.ID, AccessHash: recipient.AccessHash}},
+			Currency: "USD", Amount: 750,
+		},
+		Option: tg.PremiumGiftCodeOption{Users: 1, Months: 3, Currency: "USD", Amount: 750},
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := router.premiumPaymentForm(ctx, buyer.ID, invoice); !tgerr.Is(err, "NOT_IMPLEMENTED") {
+			t.Fatalf("denied fiat form attempt %d err=%v, want NOT_IMPLEMENTED", i+1, err)
+		}
+	}
+	if premium.issued.ID != 0 {
+		t.Fatalf("denied fiat checkout issued a payment intent: %+v", premium.issued)
+	}
+}
+
 func TestPremiumBotMessageInvoiceUsesStableSingleUseKey(t *testing.T) {
 	const (
 		buyerID = int64(1000000001)

@@ -76,6 +76,16 @@ func (r *Router) premiumPaymentForm(
 	if err != nil {
 		return nil, err
 	}
+	// The fiat Premium form is the local dev checkout; denied by default so
+	// production never grants Premium without a real XTR payment. Reject before
+	// IssuePaymentForm — a denied checkout must not leave a durable payment
+	// intent behind, even for a valid invoice.
+	debitStars := invoice.EffectiveDebitStars()
+	if !debitStars {
+		if err := r.devPaymentsErr(); err != nil {
+			return nil, err
+		}
+	}
 	recipientID := invoice.RecipientUserID
 	if invoice.Kind == domain.PremiumPurchaseSelf {
 		recipientID = userID
@@ -87,7 +97,7 @@ func (r *Router) premiumPaymentForm(
 		Months: invoice.Months, DurationDays: invoice.DurationDays,
 		AmountStars: invoice.AmountStars, PlanVersion: invoice.PlanVersion,
 		PaymentCurrency: invoice.EffectivePaymentCurrency(),
-		PaymentAmount:   invoice.EffectivePaymentAmount(), DebitStars: invoice.EffectiveDebitStars(),
+		PaymentAmount:   invoice.EffectivePaymentAmount(), DebitStars: debitStars,
 		Message: invoice.Message, IssuedAt: now,
 		ExpiresAt: now + domain.PremiumPaymentFormTTLSeconds,
 	})
@@ -119,17 +129,12 @@ func (r *Router) premiumPaymentForm(
 	if invoice.Kind == domain.PremiumPurchaseSelf {
 		wireInvoice.SetSubscriptionPeriod(invoice.DurationDays * 24 * 60 * 60)
 	}
-	if invoice.EffectiveDebitStars() {
+	if debitStars {
 		return &tg.PaymentsPaymentFormStars{
 			FormID: form.ID, BotID: botID, Title: invoice.Title,
 			Description: invoice.Description, Invoice: wireInvoice,
 			Users: tgUsersForViewer(userID, users),
 		}, nil
-	}
-	// The fiat Premium form is the local dev checkout; denied by default so
-	// production never grants Premium without a real XTR payment.
-	if err := r.devPaymentsErr(); err != nil {
-		return nil, err
 	}
 	users = append(users, domain.OfficialSystemUser())
 	wireInvoice.Test = true
