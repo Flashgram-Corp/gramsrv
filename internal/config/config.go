@@ -122,6 +122,11 @@ type Config struct {
 	// 生产应只监听 loopback，并由 nginx 将 /<username>、/addstickers/、/addemoji/、
 	// /addlist/ 与 hash-only /appeal/ 路由反代到该地址。
 	PublicLinkWebAddr string
+	// AllowDevPayments enables the local dev/fiat Stars/Premium checkout
+	// (/payments/dev-stars). Denied by default; enable only in dev/test
+	// environments so production never mints Stars or Premium without a real
+	// XTR payment.
+	AllowDevPayments bool
 	// TelegramLoginEnabled mounts the self-hosted Telegram Login/OIDC provider
 	// on PublicLinkWebAddr. Secrets are file-backed so they are not exposed in
 	// process listings or accidentally copied into tracked .env templates.
@@ -663,6 +668,8 @@ type Config struct {
 	// CallTURNCredentialTTL 是按通话签发的 TURN 凭据有效期。
 	CallTURNCredentialTTL time.Duration
 	// CallForceRelay 强制 p2p_allowed=false（调试 TURN 中继路径用）。
+	// 私聊通话 P2P 默认仅限互为联系人（rpc 层互认联系人硬门槛 + phone_p2p
+	// 默认 AllowContacts）；此开关让整条链路强制走中继。
 	CallForceRelay bool
 
 	// LiveStreamEnable 为 true 时启用频道 RTMP 直播媒体面（内嵌 RTMP ingest + ffmpeg 切段）。
@@ -854,6 +861,7 @@ func Load() (Config, error) {
 		PublicWebBaseURL:                      publicWebBaseURL,
 		PublicAppName:                         publicAppName,
 		PublicLinkWebAddr:                     envAllowEmptyOr("TELESRV_PUBLIC_LINK_WEB_ADDR", ""),
+		AllowDevPayments:                      envBoolOr("TELESRV_ALLOW_DEV_PAYMENTS", false),
 		TelegramLoginEnabled:                  envBoolOr("TELESRV_TELEGRAM_LOGIN_ENABLE", false),
 		TelegramLoginIssuer:                   strings.TrimSuffix(envOr("TELESRV_TELEGRAM_LOGIN_ISSUER", publicBaseURL), "/"),
 		TelegramLoginAllowHTTP:                envBoolOr("TELESRV_TELEGRAM_LOGIN_ALLOW_HTTP", false),

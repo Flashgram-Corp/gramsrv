@@ -40,6 +40,8 @@ import type {
   StarGiftListResponse,
   StickerSetListResponse,
   StorageStatsResponse,
+  StarsLedgerResponse,
+  StarsTopListResponse,
   VerificationApplicationDetail,
   VerificationApplicationListResponse,
   VerificationCountsResponse
@@ -178,6 +180,11 @@ export const api = {
     request<AccountRatingListResponse>(`/api/account-ratings?${params.toString()}`),
   accountRating: (userID: string) =>
     request<AccountRatingDetail>(`/api/account-ratings/${encodeURIComponent(userID)}`),
+  starsTop: (params: URLSearchParams) => request<StarsTopListResponse>(`/api/stars/top?${params.toString()}`),
+  // The account id is an int64 decimal string end to end, so it is never parsed
+  // into a number on the way to the URL.
+  starsLedger: (userID: string, params: URLSearchParams) =>
+    request<StarsLedgerResponse>(`/api/stars/ledger/${encodeURIComponent(userID)}?${params.toString()}`),
   dashboard: () => request<DashboardResponse>("/api/dashboard"),
   storageStats: () => request<StorageStatsResponse>("/api/storage/stats"),
   verificationApplications: (params: URLSearchParams) =>

@@ -825,7 +825,7 @@ func (r *Router) onPaymentsGetStarGiftAuctionState(ctx context.Context, req *tg.
 	if !state.Finished && req.Version == state.Version {
 		stateClass = &tg.StarGiftAuctionStateNotModified{}
 	}
-	return &tg.PaymentsStarGiftAuctionState{Gift: tgStarGift(state.Gift), State: stateClass,
+	return &tg.PaymentsStarGiftAuctionState{Gift: tgStarGift(state.Gift, r.clock.Now().Unix()), State: stateClass,
 		UserState: tgStarGiftAuctionUserState(state.UserState), Timeout: 30, Users: r.auctionUsers(ctx, userID, state), Chats: []tg.ChatClass{}}, nil
 }
 
@@ -847,7 +847,7 @@ func (r *Router) onPaymentsGetStarGiftActiveAuctions(ctx context.Context, req *t
 	out := &tg.PaymentsStarGiftActiveAuctions{Auctions: make([]tg.StarGiftActiveAuctionState, 0, len(states)), Users: []tg.UserClass{}, Chats: []tg.ChatClass{}}
 	userIDs := make([]int64, 0)
 	for _, state := range states {
-		out.Auctions = append(out.Auctions, tg.StarGiftActiveAuctionState{Gift: tgStarGift(state.Gift),
+		out.Auctions = append(out.Auctions, tg.StarGiftActiveAuctionState{Gift: tgStarGift(state.Gift, r.clock.Now().Unix()),
 			State: tgStarGiftAuctionState(state), UserState: tgStarGiftAuctionUserState(state.UserState)})
 		userIDs = append(userIDs, state.TopBidders...)
 	}

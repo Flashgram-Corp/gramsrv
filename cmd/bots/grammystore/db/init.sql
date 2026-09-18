@@ -161,6 +161,7 @@ CREATE TABLE refunds (
 );
 
 CREATE TABLE spin_awards (
+  spin_key TEXT NOT NULL,
   telegram_id BIGINT NOT NULL,
   day TEXT NOT NULL,
   week TEXT NOT NULL,
@@ -168,8 +169,11 @@ CREATE TABLE spin_awards (
   prize INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
   created_at BIGINT NOT NULL DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT,
-  PRIMARY KEY(telegram_id, day)
+  PRIMARY KEY(telegram_id, spin_key)
 );
+
+CREATE INDEX spin_awards_day_idx ON spin_awards (telegram_id, day);
+CREATE INDEX spin_awards_week_idx ON spin_awards (telegram_id, week);
 
 CREATE TABLE otp_deliveries (
   delivery_id TEXT PRIMARY KEY,

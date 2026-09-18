@@ -72,7 +72,10 @@ func TestTelegramLoginWidgetRoutesReachProvider(t *testing.T) {
 }
 
 func TestDevStarsCheckoutEmitsFormBoundTelegramCredentials(t *testing.T) {
-	h := newTestHandler(t, fakeResolver{}, "https://links.example.test")
+	h, err := NewHandler(Config{StickerSets: fakeResolver{}, PublicBaseURL: "https://links.example.test", AllowDevPayments: true})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
 	for _, target := range []string{
 		"/payments/dev-stars",
 		"/payments/dev-stars?form_id=0",
@@ -94,6 +97,15 @@ func TestDevStarsCheckoutEmitsFormBoundTelegramCredentials(t *testing.T) {
 		!strings.Contains(body, "type:'telesrv_dev',form_id:'-70001'") ||
 		!strings.Contains(body, "No card, Google Play, App Store, or external payment provider will be charged") {
 		t.Fatalf("dev checkout status=%d headers=%v body=%q", rr.Code, rr.Header(), body)
+	}
+}
+
+func TestDevStarsCheckoutDeniedByDefault(t *testing.T) {
+	h := newTestHandler(t, fakeResolver{}, "https://links.example.test")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/payments/dev-stars?form_id=-70001", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("dev checkout must be hidden when AllowDevPayments is unset, got status=%d", rr.Code)
 	}
 }
 

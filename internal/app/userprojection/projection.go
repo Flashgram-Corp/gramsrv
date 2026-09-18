@@ -636,7 +636,9 @@ func applyContactProjection(user domain.User, contact domain.Contact, found bool
 		return user.DeletedTombstone()
 	}
 	if !found {
-		user.Phone = ""
+		// A contact relationship alone never grants phone visibility; the target
+		// account phone is governed by PhoneNumber privacy (applyPrivacy decides
+		// whether to strip it — never wipe here so AllowAll still surfaces it).
 		user.Contact = false
 		user.Mutual = false
 		user.CloseFriend = false

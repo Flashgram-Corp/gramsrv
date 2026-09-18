@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"github.com/iamxvbaba/td/tg"
+	"github.com/iamxvbaba/td/tlprofile"
 	"strings"
 	apptelemetry "telesrv/internal/app/clienttelemetry"
 	appmessages "telesrv/internal/app/messages"
@@ -796,6 +797,9 @@ func TestTDesktopPassiveChannelStubs(t *testing.T) {
 	}
 	if len(extended.(*tg.Updates).Updates) != 0 {
 		t.Fatalf("messages.getExtendedMedia = %+v, want empty updates", extended)
+	}
+	if !r.dispatcher.Has(tlprofile.SemanticMethodMessagesGetExtendedMedia) {
+		t.Fatalf("messages.getExtendedMedia not registered, Android clients get 500 NOT_IMPLEMENTED")
 	}
 	topReactions, err := r.onMessagesGetTopReactions(ownerCtx, &tg.MessagesGetTopReactionsRequest{Limit: 3})
 	if err != nil {

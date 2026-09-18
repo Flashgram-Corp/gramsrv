@@ -380,6 +380,15 @@ export class BotDatabase {
     return Number.isSafeInteger(value) && value >= 0 ? value : 0;
   }
 
+  async wheelLimits(c = this.pool) {
+    const query = async (key, fallback) => {
+      const res = await c.query("SELECT value FROM settings WHERE key = $1", [key]);
+      const value = Number(res.rows[0]?.value ?? fallback);
+      return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+    };
+    return { daily: await query("wheel_daily_limit", 1), weekly: await query("wheel_weekly_limit", 5) };
+  }
+
   async freeNumberDailyCount(ownerID) {
     const me = (await this.pool.query("SELECT free_day, free_day_count FROM users WHERE telegram_id = $1", [ownerID])).rows[0] ?? null;
     if (!me || me.free_day !== dayKey()) return 0;
@@ -437,33 +446,40 @@ export class BotDatabase {
 
   async reserveSpin(id, serverUserID, proposedPrize) {
     return this.tx(async (client) => {
-      const user = (await client.query("SELECT * FROM users WHERE telegram_id = $1", [id])).rows[0];
+      // Lock the user row so concurrent wheel taps serialize: the second click
+      // sees the first one's pending award instead of reserving a second one.
+      const user = (await client.query("SELECT telegram_id FROM users WHERE telegram_id = $1 FOR UPDATE", [id])).rows[0];
       if (!user) throw new Error("user not found");
       const day = dayKey(), week = weekKey();
-      const existing = (await client.query("SELECT * FROM spin_awards WHERE telegram_id = $1 AND day = $2", [id, day])).rows[0];
-      if (existing) {
-        if (existing.status === "done") throw new Error("daily spin limit reached");
-        if (existing.server_user_id !== serverUserID) throw new Error("finish the pending spin with the original server account ID");
-        return existing;
+      // An interrupted grant (reserved but never finished, possibly a previous
+      // day) is resumed with the exact same spin_key, so the grant idempotency
+      // key stays stable and the user never loses the reserved prize.
+      const pending = (await client.query(
+        "SELECT * FROM spin_awards WHERE telegram_id = $1 AND status = 'pending' ORDER BY created_at DESC LIMIT 1",
+        [id]
+      )).rows[0];
+      if (pending) {
+        if (pending.server_user_id !== serverUserID) throw new Error("finish the pending spin with the original server account ID");
+        return pending;
       }
-      const dayCount = user.spin_day === day ? user.spin_day_count : 0;
-      const weekCount = user.spin_week === week ? user.spin_week_count : 0;
-      if (dayCount >= 1) throw new Error("daily spin limit reached");
-      if (weekCount >= 5) throw new Error("weekly spin limit reached");
-      await client.query(
-        "UPDATE users SET spin_day = $1, spin_day_count = $2, spin_week = $3, spin_week_count = $4, updated_at = $5 WHERE telegram_id = $6",
-        [day, dayCount + 1, week, weekCount + 1, now(), id]
-      );
+      // Count awards (done + abandoned pending), not user counters: a spin
+      // consumed a slot whether or not its grant ever finished.
+      const limits = await this.wheelLimits(client);
+      const dayCount = (await client.query("SELECT count(*)::int AS c FROM spin_awards WHERE telegram_id = $1 AND day = $2", [id, day])).rows[0].c;
+      if (limits.daily > 0 && dayCount >= limits.daily) throw new Error("daily spin limit reached");
+      const weekCount = (await client.query("SELECT count(*)::int AS c FROM spin_awards WHERE telegram_id = $1 AND week = $2", [id, week])).rows[0].c;
+      if (limits.weekly > 0 && weekCount >= limits.weekly) throw new Error("weekly spin limit reached");
+      const spinKey = randomBytes(12).toString("hex");
       const result = await client.query(
-        "INSERT INTO spin_awards(telegram_id, day, week, server_user_id, prize, status, created_at) VALUES($1, $2, $3, $4, $5, 'pending', $6) RETURNING *",
-        [id, day, week, serverUserID, proposedPrize, now()]
+        "INSERT INTO spin_awards(spin_key, telegram_id, day, week, server_user_id, prize, status, created_at) VALUES($1, $2, $3, $4, $5, $6, 'pending', $7) RETURNING *",
+        [spinKey, id, day, week, serverUserID, proposedPrize, now()]
       );
       return result.rows[0];
     });
   }
 
-  async finishSpin(id, day) {
-    await this.pool.query("UPDATE spin_awards SET status = 'done' WHERE telegram_id = $1 AND day = $2", [id, day]);
+  async finishSpin(id, spinKey) {
+    await this.pool.query("UPDATE spin_awards SET status = 'done' WHERE telegram_id = $1 AND spin_key = $2", [id, spinKey]);
   }
 
   async createPromo(code, stars, limit) {

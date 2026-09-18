@@ -7,6 +7,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/iamxvbaba/td/tg"
+	"github.com/iamxvbaba/td/tgerr"
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
 
 	"github.com/iamxvbaba/td/tlprofile"
@@ -1090,6 +1092,11 @@ func contactErr(err error) error {
 		return limitInvalidErr()
 	case errors.Is(err, store.ErrBlocklistInvalid):
 		return contactIDInvalidErr()
+	case errors.Is(err, store.ErrBlocklistConflict):
+		// REPEATABLE READ snapshot raced a concurrent blocklist write. The loss
+		// is only the failed CAS: the winning transaction fully committed, so the
+		// client can refresh and retry instead of seeing a 500.
+		return blocklistConflictErr()
 	case errors.Is(err, contacts.ErrContactNameEmpty):
 		return contactNameEmptyErr()
 	case errors.Is(err, contacts.ErrContactIDInvalid):
@@ -1097,6 +1104,11 @@ func contactErr(err error) error {
 	case errors.Is(err, contacts.ErrContactReqMissing):
 		return contactReqMissingErr()
 	default:
+		if pgErr := (&pgconn.PgError{}); errors.As(err, &pgErr) && (pgErr.Code == "40001" || pgErr.Code == "40P01") {
+			return blocklistConflictErr()
+		}
 		return internalErr()
 	}
 }
+
+func blocklistConflictErr() error { return tgerr.New(400, "BLOCKLIST_CONFLICT") }

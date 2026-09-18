@@ -47,6 +47,7 @@ export const permissionGiftsRead = "gifts.read";
 export const permissionGiftsManage = "gifts.manage";
 export const permissionRatingsRead = "ratings.read";
 export const permissionRatingsManage = "ratings.manage";
+export const permissionStarsRead = "stars.read";
 export const permissionDashboardRead = "dashboard.read";
 
 // GET /api/session is read once at boot; the panel keeps the answer here so a
@@ -142,6 +143,7 @@ const permissionLabels: Record<string, { title: string; hint: string }> = {
   "gifts.manage": { title: "Edit the gift catalogue", hint: "Import gifts, publish collectibles and give gifts" },
   "ratings.read": { title: "View account ratings", hint: "Browse the account-rating leaderboard" },
   "ratings.manage": { title: "Adjust account ratings", hint: "Recompute ratings and apply manual corrections" },
+  "stars.read": { title: "View the Stars ledger", hint: "Browse Stars balances and signed per-account history" },
   "storage.read": { title: "View storage", hint: "See media usage per account" },
   "storage.manage": { title: "Purge storage", hint: "Manually delete stored media" },
   "dashboard.read": { title: "View the dashboard", hint: "See the overview counters and server health" },
@@ -207,8 +209,8 @@ export const permissionGroups: { title: string; hint: string; permissions: strin
   },
   {
     title: "Billing",
-    hint: "Premium grants and refunds",
-    permissions: ["premium.manage"]
+    hint: "Premium grants, refunds and the Stars ledger",
+    permissions: ["premium.manage", "stars.read"]
   },
   {
     title: "The console itself",

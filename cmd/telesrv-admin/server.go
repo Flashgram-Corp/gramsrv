@@ -105,6 +105,8 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/collectible-phones/{id}", s.scopedRoute(permissionPhonesRead, http.HandlerFunc(s.handleCollectiblePhoneDetailAPI)))
 	mux.Handle("GET /api/account-ratings", s.scopedRoute(permissionRatingsRead, http.HandlerFunc(s.handleAccountRatingsAPI)))
 	mux.Handle("GET /api/account-ratings/{user_id}", s.scopedRoute(permissionRatingsRead, http.HandlerFunc(s.handleAccountRatingDetailAPI)))
+	mux.Handle("GET /api/stars/top", s.scopedRoute(permissionStarsRead, http.HandlerFunc(s.handleStarsTopAPI)))
+	mux.Handle("GET /api/stars/ledger/{user_id}", s.scopedRoute(permissionStarsRead, http.HandlerFunc(s.handleStarsLedgerAPI)))
 	mux.Handle("GET /api/storage/stats", s.scopedRoute(permissionStorageRead, http.HandlerFunc(s.handleStorageStatsAPI)))
 	mux.Handle("GET /api/moderation/cases", s.scopedRoute(permissionModerationReview, http.HandlerFunc(s.handleModerationCasesAPI)))
 	mux.Handle("GET /api/moderation/cases/{id}", s.scopedRoute(permissionModerationReview, http.HandlerFunc(s.handleModerationCaseAPI)))
@@ -2879,6 +2881,80 @@ func (s *server) handleAccountRatingDetailAPI(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{
 		"rating": detail.Rating,
 		"events": detail.Events,
+	})
+}
+
+func (s *server) handleStarsTopAPI(w http.ResponseWriter, r *http.Request) {
+	if s.read == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "read store is not configured")
+		return
+	}
+	query := r.URL.Query()
+	beforeID, err := parseInt64(query.Get("before_id"))
+	if err != nil || beforeID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid before_id")
+		return
+	}
+	limit, err := parseInt(query.Get("limit"))
+	if err != nil || limit < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	rows, hasMore, err := s.read.ListStarsTopAccounts(r.Context(), beforeID, limit, query.Get("q"))
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	nextBeforeID := ""
+	if hasMore && len(rows) > 0 {
+		nextBeforeID = strconv.FormatInt(rows[len(rows)-1].UserID, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rows":           rows,
+		"has_more":       hasMore,
+		"next_before_id": nextBeforeID,
+	})
+}
+
+func (s *server) handleStarsLedgerAPI(w http.ResponseWriter, r *http.Request) {
+	if s.read == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "read store is not configured")
+		return
+	}
+	userID, err := parseInt64(r.PathValue("user_id"))
+	if err != nil || userID <= 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid user_id")
+		return
+	}
+	query := r.URL.Query()
+	beforeID, err := parseInt64(query.Get("before_id"))
+	if err != nil || beforeID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid before_id")
+		return
+	}
+	limit, err := parseInt(query.Get("limit"))
+	if err != nil || limit < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	account, entries, hasMore, err := s.read.StarsAccountLedger(r.Context(), userID, beforeID, limit)
+	if err != nil {
+		if errors.Is(err, errReadNotFound) {
+			writeAPIError(w, http.StatusNotFound, "stars account not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	nextBeforeID := ""
+	if hasMore && len(entries) > 0 {
+		nextBeforeID = strconv.FormatInt(entries[len(entries)-1].ID, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"account":        account,
+		"entries":        entries,
+		"has_more":       hasMore,
+		"next_before_id": nextBeforeID,
 	})
 }
 

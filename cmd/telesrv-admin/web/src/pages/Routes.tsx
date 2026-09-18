@@ -30,12 +30,15 @@ import { VerificationDetailPage } from "./VerificationDetailPage";
 import { VerificationPage } from "./VerificationPage";
 import { StoragePage } from "./StoragePage";
 import { StickerSetsPage } from "./StickerSetsPage";
+import { StarsDetailPage } from "./StarsDetailPage";
+import { StarsPage } from "./StarsPage";
 import {
   PermissionGate,
   permissionAdminsManage,
   permissionAuditRead,
   permissionBotVerificationReview,
   permissionPremiumManage,
+  permissionStarsRead,
   permissionVerificationReview
 } from "../permissions";
 import { AdminUsersPage } from "./AdminUsersPage";
@@ -95,6 +98,21 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
     return (
       <PermissionGate permission={permissionAuditRead}>
         <AuditLogPage />
+      </PermissionGate>
+    );
+  }
+  const starsUserID = route.path.match(/^\/stars\/(\d+)$/)?.[1];
+  if (starsUserID) {
+    return (
+      <PermissionGate permission={permissionStarsRead}>
+        <StarsDetailPage userID={starsUserID} navigate={navigate} />
+      </PermissionGate>
+    );
+  }
+  if (route.path === "/stars") {
+    return (
+      <PermissionGate permission={permissionStarsRead}>
+        <StarsPage navigate={navigate} />
       </PermissionGate>
     );
   }
