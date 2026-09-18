@@ -400,7 +400,14 @@ WHERE enabled
 // guardManagerRemovalOn refuses an edit that would leave nobody able to manage
 // operators. stillManages short-circuits the count for edits that keep the
 // capability.
-func guardManagerRemovalOn(ctx context.Context, q pgxRunner, id int64, permissions []string, enabled bool) error {
+//
+// The acting session is itself a manager by construction -- every
+// operator-account route is gated on admins.manage -- so an edit can only ever
+// strand operator-management when it is the acting account stripping its own
+// row: the break-glass login (UserID 0) has no row, and any other manager that
+// stays enabled keeps the console operable. editingSelf reports whether the
+// acting session is the very account being edited.
+func guardManagerRemovalOn(ctx context.Context, q pgxRunner, id int64, permissions []string, enabled bool, editingSelf bool) error {
 	stillManages := enabled && newPanelPermissions(permissions).Has(permissionAdminsManage)
 	if stillManages {
 		return nil
@@ -409,7 +416,13 @@ func guardManagerRemovalOn(ctx context.Context, q pgxRunner, id int64, permissio
 	if err != nil {
 		return err
 	}
-	if others == 0 {
+	if others > 0 {
+		return nil
+	}
+	// Nobody else is left with the capability. If someone else ran this edit,
+	// that session still holds admins.manage and can re-grant, so there is
+	// nothing to fence; only a self-demotion as the last manager is refused.
+	if editingSelf {
 		return errLastManagerStanding
 	}
 	return nil
@@ -418,9 +431,9 @@ func guardManagerRemovalOn(ctx context.Context, q pgxRunner, id int64, permissio
 // guardManagerRemovalTx runs the guard inside the runner's transaction after
 // serialising on the advisory lock, so the count and the mutation that follows
 // cannot interleave with a concurrent demotion of the same last manager.
-func guardManagerRemovalTx(ctx context.Context, tx pgx.Tx, id int64, permissions []string, enabled bool) error {
+func guardManagerRemovalTx(ctx context.Context, tx pgx.Tx, id int64, permissions []string, enabled bool, editingSelf bool) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, managerGuardAdvisoryKey); err != nil {
 		return fmt.Errorf("serialise last-manager guard: %w", err)
 	}
-	return guardManagerRemovalOn(ctx, tx, id, permissions, enabled)
+	return guardManagerRemovalOn(ctx, tx, id, permissions, enabled, editingSelf)
 }

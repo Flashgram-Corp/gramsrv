@@ -249,6 +249,20 @@ func (s *server) handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 
 type actorKey struct{}
 
+type operatorIDKey struct{}
+
+// operatorIDFromContext returns the admin_console_users id of the acting
+// session, 0 for the break-glass login. requireAuthAPI always stores it, so a
+// missing value is unreachable in practice; 0 is the safe reading for the
+// last-manager guard because the break-glass session never has a row being
+// edited.
+func operatorIDFromContext(ctx context.Context) int64 {
+	if id, ok := ctx.Value(operatorIDKey{}).(int64); ok {
+		return id
+	}
+	return 0
+}
+
 func actorFromContext(ctx context.Context) string {
 	if actor, ok := ctx.Value(actorKey{}).(string); ok && actor != "" {
 		return actor
