@@ -937,7 +937,12 @@ export function createBot({ config, db, gramsrv }) {
     if (action === "wheel") {
       const limits = await db.wheelLimits();
       await db.setPending(ctx.from.id, "admin_wheel");
-      return editOrReply(ctx, tr(ctx.from.id, "adminPromptWheel", { daily: String(limits.daily), weekly: String(limits.weekly) }), backKeyboard(language, "admin:menu"));
+      return editOrReply(ctx, tr(ctx.from.id, "adminPromptWheel", {
+        daily: String(limits.daily),
+        weekly: String(limits.weekly),
+        enabled: limits.enabled ? tr(ctx.from.id, "wheelEnabledLabel") : tr(ctx.from.id, "wheelDisabledLabel"),
+        max: limits.maxPrize > 0 ? String(limits.maxPrize) : tr(ctx.from.id, "wheelMaxUnlimited"),
+      }), backKeyboard(language, "admin:menu"));
     }
     if (action === "grants") return editOrReply(ctx, tr(ctx.from.id, "adminGrantsTitle"), adminGrantsKeyboard(language));
     if (action === "stats") {
@@ -1355,17 +1360,28 @@ export function createBot({ config, db, gramsrv }) {
         let updated = 0;
         for (const line of lines) {
           const parts = line.split(/\s+/);
+          if (parts.length === 1 && (parts[0] === "on" || parts[0] === "off")) {
+            await db.setSetting("wheel_enabled", parts[0]);
+            updated++;
+            continue;
+          }
           if (parts.length !== 2) throw new Error("invalid wheel limit");
           const [key, valueRaw] = parts;
           const value = Number(valueRaw);
           if (!Number.isSafeInteger(value) || value < 0 || value > 1000) throw new Error("invalid wheel limit");
           if (key === "daily") { await db.setSetting("wheel_daily_limit", value); updated++; }
           else if (key === "weekly") { await db.setSetting("wheel_weekly_limit", value); updated++; }
+          else if (key === "max") { await db.setSetting("wheel_max_prize", value); updated++; }
           else throw new Error("invalid wheel limit");
         }
         const limits = await db.wheelLimits();
         await db.clearPending(ctx.from.id);
-        return adminResult(tr(ctx.from.id, "wheelSaved", { daily: String(limits.daily), weekly: String(limits.weekly) }));
+        return adminResult(tr(ctx.from.id, "wheelSaved", {
+          daily: String(limits.daily),
+          weekly: String(limits.weekly),
+          enabled: limits.enabled ? tr(ctx.from.id, "wheelEnabledLabel") : tr(ctx.from.id, "wheelDisabledLabel"),
+          max: limits.maxPrize > 0 ? String(limits.maxPrize) : tr(ctx.from.id, "wheelMaxUnlimited"),
+        }));
       }
     } catch (error) {
       console.error("Bot input action failed", pending.kind, error);
