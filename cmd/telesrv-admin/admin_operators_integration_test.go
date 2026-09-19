@@ -217,10 +217,10 @@ func TestOperatorUniquenessAndLastManagerGuard(t *testing.T) {
 	// Removing the only manager's capability, or disabling the only manager, is
 	// refused when the acting operator is doing it to their own row -- not
 	// something to walk into by accident.
-	if err := srv.guardManagerRemoval(ctx, solo.id, []string{}, false, true); !errors.Is(err, errLastManagerStanding) {
+	if err := srv.guardManagerRemoval(ctx, solo.id, []string{}, false, solo.id); !errors.Is(err, errLastManagerStanding) {
 		t.Fatalf("last manager guard err=%v, want errLastManagerStanding", err)
 	}
-	if err := srv.guardManagerRemoval(ctx, solo.id, []string{permissionAccountsRead}, true, true); !errors.Is(err, errLastManagerStanding) {
+	if err := srv.guardManagerRemoval(ctx, solo.id, []string{permissionAccountsRead}, true, solo.id); !errors.Is(err, errLastManagerStanding) {
 		t.Fatalf("self-demotion guard err=%v, want errLastManagerStanding", err)
 	}
 	// But the same demotion is fine when someone else -- the built-in
@@ -228,7 +228,7 @@ func TestOperatorUniquenessAndLastManagerGuard(t *testing.T) {
 	// the acting session still manages operators, so the console stays
 	// operable. Before this, every edit to a restricted operator failed while
 	// the panel was administered from the master login.
-	if err := srv.guardManagerRemoval(ctx, solo.id, []string{permissionAccountsRead}, true, false); err != nil {
+	if err := srv.guardManagerRemoval(ctx, solo.id, []string{permissionAccountsRead}, true, 0); err != nil {
 		t.Fatalf("break-glass edit of the last named manager err=%v, want nil", err)
 	}
 
@@ -238,7 +238,7 @@ func TestOperatorUniquenessAndLastManagerGuard(t *testing.T) {
 		t.Fatalf("create buddy: %v", err)
 	}
 	buddy.id, buddy.name = u.ID, u.Username
-	if err := srv.guardManagerRemoval(ctx, solo.id, []string{}, false, true); err != nil {
+	if err := srv.guardManagerRemoval(ctx, solo.id, []string{}, false, solo.id); err != nil {
 		t.Fatalf("guard with a second manager err=%v, want nil", err)
 	}
 
@@ -251,10 +251,10 @@ func TestOperatorUniquenessAndLastManagerGuard(t *testing.T) {
 		t.Fatalf("create staff: %v", err)
 	}
 	staffID := u.ID
-	if err := srv.guardManagerRemoval(ctx, staffID, []string{permissionAccountsRead, permissionPremiumManage, permissionStarsRead}, true, false); err != nil {
+	if err := srv.guardManagerRemoval(ctx, staffID, []string{permissionAccountsRead, permissionPremiumManage, permissionStarsRead}, true, 0); err != nil {
 		t.Fatalf("grant stars.read to restricted operator err=%v, want nil", err)
 	}
-	if err := srv.guardManagerRemoval(ctx, staffID, []string{permissionAccountsRead}, true, true); err != nil {
+	if err := srv.guardManagerRemoval(ctx, staffID, []string{permissionAccountsRead}, true, staffID); err != nil {
 		t.Fatalf("self-edit that keeps staff a non-manager err=%v, want nil", err)
 	}
 
@@ -278,6 +278,112 @@ func TestOperatorUniquenessAndLastManagerGuard(t *testing.T) {
 	})
 	if buddy.name == "" || solo.name == "" || dupOne.name == "" || staffID == 0 {
 		t.Fatal("fixture rows were not created")
+	}
+}
+
+// TestDemotedInFlightOperatorCannotRemoveLastNamedManager proves permission
+// revocation and the last-manager fence remain sound across the advisory-lock
+// wait. Both requests can pass HTTP authentication before the first transaction
+// demotes the second actor; the stale request must not then be confused with
+// break-glass and remove the only remaining named manager.
+func TestDemotedInFlightOperatorCannotRemoveLastNamedManager(t *testing.T) {
+	srv, store := operatorServer(t)
+	ctx := context.Background()
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano()%1_000_000)
+	commandID := "stale-manager-" + suffix
+	password := "password-" + suffix
+
+	a, err := srv.createAdminConsoleUser(ctx, "routea"+suffix, password, []string{permissionAdminsManage}, true)
+	if err != nil {
+		t.Fatalf("create manager A: %v", err)
+	}
+	b, err := srv.createAdminConsoleUser(ctx, "routeb"+suffix, password, []string{permissionAdminsManage}, true)
+	if err != nil {
+		t.Fatalf("create manager B: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_audit_logs WHERE command_id = $1`, commandID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_commands WHERE command_id = $1`, commandID)
+		_, _ = store.pool.Exec(ctx, `DELETE FROM admin_console_users WHERE id = $1 OR id = $2`, a.ID, b.ID)
+	})
+
+	bCookies, csrf := namedSignIn(t, srv, b.Username, password)
+	winningTx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin winning transaction: %v", err)
+	}
+	defer func() { _ = winningTx.Rollback(ctx) }()
+	if _, err := winningTx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, managerGuardAdvisoryKey); err != nil {
+		t.Fatalf("lock manager guard: %v", err)
+	}
+
+	body, err := json.Marshal(adminUserActionRequest{
+		CommandID:   commandID,
+		Reason:      "integration",
+		Confirm:     true,
+		ID:          a.ID,
+		Permissions: []string{permissionAuditRead},
+	})
+	if err != nil {
+		t.Fatalf("marshal stale request: %v", err)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/actions/set-admin-operator-access", strings.NewReader(string(body)))
+		req.Header.Set(csrfHeaderName, csrf)
+		srv.routes().ServeHTTP(rec, withCookies(req, bCookies))
+		done <- rec
+	}()
+
+	// Do not demote B until its request has passed requireAdminsManage and is
+	// actually waiting for this transaction's advisory lock.
+	blocked := false
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := store.pool.QueryRow(ctx, `
+SELECT EXISTS (
+  SELECT 1 FROM pg_locks
+  WHERE locktype = 'advisory'
+    AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+    AND NOT granted
+)`).Scan(&blocked); err != nil {
+			t.Fatalf("observe advisory waiter: %v", err)
+		}
+		if blocked {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !blocked {
+		t.Fatal("stale request did not reach the manager advisory lock")
+	}
+
+	if _, err := updateAdminConsoleUserOn(ctx, winningTx, b.ID, []string{permissionAuditRead}, true); err != nil {
+		t.Fatalf("A demotes B: %v", err)
+	}
+	if err := winningTx.Commit(ctx); err != nil {
+		t.Fatalf("commit A demotion: %v", err)
+	}
+
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stale request did not finish after lock release")
+	}
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), errLastManagerStanding.Error()) {
+		t.Fatalf("stale request status=%d body=%s, want guard failure", rec.Code, rec.Body.String())
+	}
+
+	var managers int
+	if err := store.pool.QueryRow(ctx, `
+SELECT count(*)::int FROM admin_console_users
+WHERE enabled AND permissions @> ARRAY[$1]::text[]`, permissionAdminsManage).Scan(&managers); err != nil {
+		t.Fatalf("count remaining managers: %v", err)
+	}
+	if managers != 1 {
+		t.Fatalf("remaining named managers=%d, want A preserved as the only manager", managers)
 	}
 }
 

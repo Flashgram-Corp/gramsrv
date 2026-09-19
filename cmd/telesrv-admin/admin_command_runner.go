@@ -401,13 +401,13 @@ WHERE enabled
 // operators. stillManages short-circuits the count for edits that keep the
 // capability.
 //
-// The acting session is itself a manager by construction -- every
-// operator-account route is gated on admins.manage -- so an edit can only ever
-// strand operator-management when it is the acting account stripping its own
-// row: the break-glass login (UserID 0) has no row, and any other manager that
-// stays enabled keeps the console operable. editingSelf reports whether the
-// acting session is the very account being edited.
-func guardManagerRemovalOn(ctx context.Context, q pgxRunner, id int64, permissions []string, enabled bool, editingSelf bool) error {
+// A named acting session that still manages operators is included in others
+// whenever it edits a different row. Therefore, if no other manager is visible
+// after the advisory lock, a named actor is either editing itself or was
+// demoted while its request waited for the lock. Only UserID 0, the built-in
+// break-glass login with no database row, may deliberately leave zero named
+// managers.
+func guardManagerRemovalOn(ctx context.Context, q pgxRunner, id int64, permissions []string, enabled bool, actingID int64) error {
 	stillManages := enabled && newPanelPermissions(permissions).Has(permissionAdminsManage)
 	if stillManages {
 		return nil
@@ -419,21 +419,18 @@ func guardManagerRemovalOn(ctx context.Context, q pgxRunner, id int64, permissio
 	if others > 0 {
 		return nil
 	}
-	// Nobody else is left with the capability. If someone else ran this edit,
-	// that session still holds admins.manage and can re-grant, so there is
-	// nothing to fence; only a self-demotion as the last manager is refused.
-	if editingSelf {
-		return errLastManagerStanding
+	if actingID == 0 {
+		return nil
 	}
-	return nil
+	return errLastManagerStanding
 }
 
 // guardManagerRemovalTx runs the guard inside the runner's transaction after
 // serialising on the advisory lock, so the count and the mutation that follows
 // cannot interleave with a concurrent demotion of the same last manager.
-func guardManagerRemovalTx(ctx context.Context, tx pgx.Tx, id int64, permissions []string, enabled bool, editingSelf bool) error {
+func guardManagerRemovalTx(ctx context.Context, tx pgx.Tx, id int64, permissions []string, enabled bool, actingID int64) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, managerGuardAdvisoryKey); err != nil {
 		return fmt.Errorf("serialise last-manager guard: %w", err)
 	}
-	return guardManagerRemovalOn(ctx, tx, id, permissions, enabled, editingSelf)
+	return guardManagerRemovalOn(ctx, tx, id, permissions, enabled, actingID)
 }

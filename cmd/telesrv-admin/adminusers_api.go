@@ -38,11 +38,9 @@ func (s *server) requireAdminsManage(next http.Handler) http.Handler {
 // can show, without leaking the constraint name.
 var errAdminUsernameTaken = errors.New("username is already taken")
 
-// errLastManagerStanding guards against the acting operator stripping
-// admins.manage from their own row while nobody else holds it. Every other
-// edit cannot strand operator-management: the acting session is itself a
-// manager (the operator routes are gated on admins.manage) and the break-glass
-// login keeps the console recoverable.
+// errLastManagerStanding guards against a named operator removing the final
+// enabled admins.manage grant. The break-glass login may deliberately recover
+// or replace that grant, but an ordinary session must never be mistaken for it.
 var errLastManagerStanding = errors.New("this would leave no enabled account able to manage operators")
 
 // errUsernameReserved guards the break-glass name, which authentication
@@ -233,13 +231,11 @@ func (s *server) handleUpdateAdminUserAPI(w http.ResponseWriter, r *http.Request
 		if err := validatePermissions(permissions); err != nil {
 			return admin.CommandResult{}, err
 		}
-		// The guard runs for the dry run too, and inside the command
-		// transaction with the advisory lock when confirmed. editingSelf is
-		// the only case it fences: the acting session always holds
-		// admins.manage (these routes require it), so everything else keeps
-		// the console operable.
-		editingSelf := actingID != 0 && actingID == body.ID
-		if err := guardManagerRemovalTx(ctx, tx, body.ID, permissions, enabled, editingSelf); err != nil {
+		// The guard runs for the dry run too, and inside the command transaction
+		// with the advisory lock when confirmed. Passing the identity, rather
+		// than only whether this is a self-edit, keeps a named request that was
+		// demoted while waiting on the lock distinct from break-glass.
+		if err := guardManagerRemovalTx(ctx, tx, body.ID, permissions, enabled, actingID); err != nil {
 			return admin.CommandResult{}, err
 		}
 		if meta.DryRun {
@@ -335,9 +331,9 @@ func enabledWord(enabled bool) string {
 // guardManagerRemoval is the pool-level last-manager fence kept for the
 // store-level callers and integration tests. The routed mutations run the
 // transaction-shaped guardManagerRemovalTx instead (admin_command_runner.go),
-// which serialises the count-and-edit under the advisory lock. editingSelf
-// reports whether the acting session is the account being edited.
-func (s *server) guardManagerRemoval(ctx context.Context, id int64, permissions []string, enabled bool, editingSelf bool) error {
+// which serialises the count-and-edit under the advisory lock. actingID is 0
+// only for the built-in break-glass login.
+func (s *server) guardManagerRemoval(ctx context.Context, id int64, permissions []string, enabled bool, actingID int64) error {
 	var q pgxRunner
 	if s != nil && s.read != nil {
 		q = s.read.pool
@@ -345,5 +341,5 @@ func (s *server) guardManagerRemoval(ctx context.Context, id int64, permissions 
 	if q == nil {
 		return fmt.Errorf("read store is not configured")
 	}
-	return guardManagerRemovalOn(ctx, q, id, permissions, enabled, editingSelf)
+	return guardManagerRemovalOn(ctx, q, id, permissions, enabled, actingID)
 }
