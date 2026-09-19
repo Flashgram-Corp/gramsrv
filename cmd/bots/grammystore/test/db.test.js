@@ -187,7 +187,7 @@ test("concurrent wheel taps reserve one award and an interrupted grant resumes i
   await db.pool.query("UPDATE spin_awards SET day = '2000-01-01', week = '2000-W01' WHERE spin_key = $1", [a.spin_key]);
   const retry = await db.reserveSpin(1, 10, 999);
   assert.equal(retry.spin_key, a.spin_key);
-  assert.equal(retry.prize, 50);
+  assert.equal(retry.prize, a.prize, "the resumed award keeps the shared reservation's prize, not the fresh proposal");
   await db.finishSpin(1, retry.spin_key);
   const fresh = await db.reserveSpin(1, 10, 60);
   assert.notEqual(fresh.spin_key, a.spin_key, "after finishing, a new spin is reserved for the new day");
