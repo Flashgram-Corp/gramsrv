@@ -386,7 +386,14 @@ export class BotDatabase {
       const value = Number(res.rows[0]?.value ?? fallback);
       return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
     };
-    return { daily: await query("wheel_daily_limit", 1), weekly: await query("wheel_weekly_limit", 5) };
+    const enabled = await c.query("SELECT value FROM settings WHERE key = 'wheel_enabled'");
+    const isEnabled = String(enabled.rows[0]?.value ?? "on").toLowerCase() !== "off";
+    return {
+      enabled: isEnabled,
+      daily: await query("wheel_daily_limit", 1),
+      weekly: await query("wheel_weekly_limit", 5),
+      maxPrize: await query("wheel_max_prize", 0),
+    };
   }
 
   async freeNumberDailyCount(ownerID) {
@@ -446,6 +453,8 @@ export class BotDatabase {
 
   async reserveSpin(id, serverUserID, proposedPrize) {
     return this.tx(async (client) => {
+      const limits = await this.wheelLimits(client);
+      if (!limits.enabled) throw new Error("wheel is disabled");
       // Lock the user row so concurrent wheel taps serialize: the second click
       // sees the first one's pending award instead of reserving a second one.
       const user = (await client.query("SELECT telegram_id FROM users WHERE telegram_id = $1 FOR UPDATE", [id])).rows[0];
@@ -464,7 +473,7 @@ export class BotDatabase {
       }
       // Count awards (done + abandoned pending), not user counters: a spin
       // consumed a slot whether or not its grant ever finished.
-      const limits = await this.wheelLimits(client);
+      const cappedPrize = limits.maxPrize > 0 ? Math.min(proposedPrize, limits.maxPrize) : proposedPrize;
       const dayCount = (await client.query("SELECT count(*)::int AS c FROM spin_awards WHERE telegram_id = $1 AND day = $2", [id, day])).rows[0].c;
       if (limits.daily > 0 && dayCount >= limits.daily) throw new Error("daily spin limit reached");
       const weekCount = (await client.query("SELECT count(*)::int AS c FROM spin_awards WHERE telegram_id = $1 AND week = $2", [id, week])).rows[0].c;
@@ -472,7 +481,7 @@ export class BotDatabase {
       const spinKey = randomBytes(12).toString("hex");
       const result = await client.query(
         "INSERT INTO spin_awards(spin_key, telegram_id, day, week, server_user_id, prize, status, created_at) VALUES($1, $2, $3, $4, $5, $6, 'pending', $7) RETURNING *",
-        [spinKey, id, day, week, serverUserID, proposedPrize, now()]
+        [spinKey, id, day, week, serverUserID, cappedPrize, now()]
       );
       return result.rows[0];
     });

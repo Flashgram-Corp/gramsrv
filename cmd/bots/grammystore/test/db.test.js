@@ -138,6 +138,39 @@ test("wheel limits count actual spins: daily >1 and unlimited daily with a weekl
   }
 });
 
+test("wheel disabled setting causes reserveSpin to reject", async () => {
+  if (!db) return;
+  await cleanTable("spin_awards"); await cleanTable("users");
+  await db.upsertUser({ id: 1, first_name: "Owner" }, 10, "ru");
+  try {
+    await db.setSetting("wheel_enabled", "off");
+    await assert.rejects(() => db.reserveSpin(1, 10, 50), { message: /wheel is disabled/ });
+  } finally {
+    await db.pool.query("DELETE FROM settings WHERE key = 'wheel_enabled'");
+  }
+  const reserved = await db.reserveSpin(1, 10, 50);
+  assert.equal(reserved.status, "pending");
+  await db.finishSpin(1, reserved.spin_key);
+});
+
+test("wheel_max_prize caps the award when maxPrize is set", async () => {
+  if (!db) return;
+  await cleanTable("spin_awards"); await cleanTable("users");
+  await db.upsertUser({ id: 1, first_name: "Owner" }, 10, "ru");
+  try {
+    await db.setSetting("wheel_max_prize", "100");
+    const award = await db.reserveSpin(1, 10, 999);
+    assert.equal(award.prize, 100, "prize must be capped to wheel_max_prize");
+    await db.finishSpin(1, award.spin_key);
+  } finally {
+    await db.pool.query("DELETE FROM settings WHERE key = 'wheel_max_prize'");
+  }
+  await cleanTable("spin_awards");
+  const uncapped = await db.reserveSpin(1, 10, 999);
+  assert.equal(uncapped.prize, 999, "no cap when wheel_max_prize is cleared");
+  await db.finishSpin(1, uncapped.spin_key);
+});
+
 test("concurrent wheel taps reserve one award and an interrupted grant resumes it", async () => {
   if (!db) return;
   await cleanTable("spin_awards"); await cleanTable("users");

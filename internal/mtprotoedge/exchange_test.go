@@ -101,7 +101,19 @@ func TestKeyExchange(t *testing.T) {
 	if saved.ServerSalt != res.ServerSalt {
 		t.Fatalf("server salt mismatch: server=%d client=%d", saved.ServerSalt, res.ServerSalt)
 	}
-	completed := observedLogs.FilterMessage("Key exchange completed").All()
+	// "Key exchange completed" is logged by the server only after the exchange
+	// run returns, while the auth key store commit happens first (before
+	// DhGenOk). The server goroutine can be descheduled in that window, so poll
+	// for the entry instead of asserting once right after the key is visible.
+	var completed []observer.LoggedEntry
+	logDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(logDeadline) {
+		completed = observedLogs.FilterMessage("Key exchange completed").All()
+		if len(completed) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if len(completed) != 1 || completed[0].Level != zap.DebugLevel {
 		t.Fatalf("successful key exchange logs = %+v, want one Debug entry", completed)
 	}
