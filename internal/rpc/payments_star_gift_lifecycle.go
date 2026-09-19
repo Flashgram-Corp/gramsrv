@@ -536,7 +536,11 @@ func (r *Router) onPaymentsGetResaleStarGifts(ctx context.Context, req *tg.Payme
 		}
 		if found {
 			hash := int64(preview.Revision)
-			out.SetAttributesHash(hash)
+			// attributes and attributes_hash share flag bit 1. The profile encoder
+			// requires both fields once that bit is set, so a lone SetAttributesHash
+			// produces "explicit flag has nil interface field attributes". When the
+			// caller's hash already matches, omit the flag entirely (the client keeps
+			// its cached attribute list); otherwise publish the list and hash together.
 			if attributesHash != hash {
 				attributes := make([]tg.StarGiftAttributeClass, 0, len(preview.Models)+len(preview.Patterns)+len(preview.Backdrops))
 				for _, attribute := range preview.Models {
@@ -548,6 +552,7 @@ func (r *Router) onPaymentsGetResaleStarGifts(ctx context.Context, req *tg.Payme
 				for _, attribute := range preview.Backdrops {
 					attributes = append(attributes, tgStarGiftAttribute(attribute))
 				}
+				out.SetAttributesHash(hash)
 				out.SetAttributes(attributes)
 			}
 		}
