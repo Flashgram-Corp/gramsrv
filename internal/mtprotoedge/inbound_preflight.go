@@ -33,6 +33,10 @@ const (
 	inboundItemHTTPWait
 	inboundItemDropAnswer
 	inboundItemDestroyAuthKey
+	// inboundItemHelpTest carries the legacy help.test#c0e202f7 = Bool method,
+	// which was removed from the published schema but is still sent by some
+	// clients. It is answered with a fixed boolTrue and never reaches routing.
+	inboundItemHelpTest
 	inboundItemRPC
 	inboundItemCapacityError
 	inboundItemRPCAdmissionError
@@ -542,7 +546,8 @@ func inboundTypeIsService(typeID uint32) bool {
 		mt.DestroySessionRequestTypeID,
 		mt.HTTPWaitRequestTypeID,
 		mt.RPCDropAnswerRequestTypeID,
-		destroyAuthKeyRequestTypeID:
+		destroyAuthKeyRequestTypeID,
+		helpTestRequestTypeID:
 		return true
 	default:
 		return false
@@ -724,6 +729,11 @@ func preflightInboundItem(msgID int64, seqNo int32, typeID uint32, content bool,
 			return item, err
 		}
 		item.kind, item.payload = inboundItemDestroyAuthKey, value
+	case helpTestRequestTypeID:
+		if len(body) != bin.Word {
+			return item, fmt.Errorf("decode help.test: expected %d bytes, got %d", bin.Word, len(body))
+		}
+		item.kind, item.payload = inboundItemHelpTest, helpTestRequest{}
 	default:
 		item.kind = inboundItemRPC
 	}
@@ -1043,6 +1053,16 @@ func (s *Server) executeInboundPlan(ctx context.Context, cs *connState, c *Conn,
 			c.beginTerminalShutdown()
 			c.closeTransport()
 			return nil
+		case inboundItemHelpTest:
+			// Legacy help.test#c0e202f7 = Bool was removed from the published
+			// schema but is still used by some clients as a probe. Answer with the
+			// fixed boolTrue terminal; it needs no auth and never reaches routing.
+			s.log.Debug("Received help.test", zap.Int64("msg_id", item.msgID))
+			if err := c.SendRequiredControl(ctx, proto.MessageServerResponse, &helpTestRPCResult{
+				RequestMessageID: item.msgID,
+			}); err != nil {
+				return err
+			}
 		case inboundItemRPC:
 			// prepareInboundRPCBatch owns every fresh RPC before synchronous service
 			// execution begins; commitRPCBatch publishes them after all protocol barriers.
