@@ -15,9 +15,12 @@ var assets embed.FS
 // peersForSeed returns the peer→avatar mapping, using the configured
 // Premium bot ID instead of the compile-time constant so that deployments
 // with TELESRV_PREMIUM_BOT_USER_ID get the avatar on the right identity.
+//
+// The official system account (777000) is deliberately absent: its avatar is
+// operator-overridable (Server Settings → Server identity), so it is handled by
+// SeedOfficialSystemAvatar instead of the fixed, skip-if-present Seed loop here.
 func peersForSeed() map[int64]string {
 	return map[int64]string{
-		domain.OfficialSystemUserID:         "telegram.jpg",
 		domain.BotFatherUserID:              "botfather.jpg",
 		domain.StickersBotUserID:            "stickers.jpg",
 		domain.VerifyBotUserID:              "verifybot.jpg",
@@ -79,4 +82,48 @@ func Seed(ctx context.Context, av AvatarSetter, now int64) error {
 
 func isVideo(name string) bool {
 	return len(name) > 4 && name[len(name)-4:] == ".mp4"
+}
+
+// SeedOfficialSystemAvatar assigns the built-in official system account's
+// (777000) profile photo from the operator's Server Settings → Server identity
+// icon, mirroring the identity store's "configured, else bundled default"
+// contract.
+//
+// customIcon, when non-empty, is the operator's uploaded icon (any format the
+// files pipeline accepts; it is re-encoded like any avatar). When empty, the
+// bundled default telegram.jpg is used. Either way the resulting avatar
+// replaces whatever the account currently has on *every* call, so both setting
+// a custom icon and removing it again are reflected without a restart. Callers
+// that must not churn (the live watcher) only call this when the icon actually
+// changed.
+//
+// It returns true when a custom icon is in effect (for the startup log line).
+// Like Seed, it runs inside a single advisory-locked SeedTx so a partially
+// written photo is rolled back rather than orphaned.
+func SeedOfficialSystemAvatar(ctx context.Context, av AvatarSetter, customIcon []byte, now int64) (bool, error) {
+	usingCustom := len(customIcon) > 0
+	data := customIcon
+	if !usingCustom {
+		embedded, err := fs.ReadFile(assets, "telegram.jpg")
+		if err != nil {
+			return false, fmt.Errorf("official system avatar: read embedded asset: %w", err)
+		}
+		data = embedded
+	}
+	err := av.SeedTx(ctx, func(ctx context.Context, txAv AvatarSetter) error {
+		photo, err := txAv.CreateAvatarFromBytes(ctx, data)
+		if err != nil {
+			return fmt.Errorf("official system avatar: create avatar: %w", err)
+		}
+		if _, found, err := txAv.SetCurrentProfilePhotoKind(ctx, domain.PeerTypeUser, domain.OfficialSystemUserID, domain.ProfilePhotoKindProfile, photo.ID, int(now)); err != nil {
+			return fmt.Errorf("official system avatar: set current photo: %w", err)
+		} else if !found {
+			return fmt.Errorf("official system avatar: bind current photo: not found")
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return usingCustom, nil
 }

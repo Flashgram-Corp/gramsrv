@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -22,9 +23,10 @@ const (
 	iconBaseName = "icon"
 )
 
-// Info 是展示给客户端、可编辑的服务器身份。主服务器启动时读取一次 Name（通过
-// domain.SetOfficialSystemUserDisplayName 影响 777000 展示名），每次发送登录通知时
-// 实时读取模板覆盖。
+// Info 是展示给客户端、可编辑的服务器身份。Name 经
+// domain.SetOfficialSystemUserDisplayName 影响 777000 展示名（启动时应用一次，
+// 之后由 internal/app/systemidentity.Watcher 轮询本文件在运行期持续跟随），模板
+// 覆盖则在每次发送登录通知时实时读取。
 type Info struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -164,6 +166,24 @@ func (s *Store) Icon() (data []byte, ext string, ok bool) {
 	return raw, info.IconExt, true
 }
 
+// IconFingerprint 返回一个仅随「图标内容」变化的短字符串，供主服务器轮询判断
+// operator 是否新增/替换/移除了 Server identity 图标。同名扩展覆盖上传时靠图标的
+// mtime+size 区分；未配置图标返回 ""；读不到图标文件时退化为扩展名。名称的变化由
+// 调用方直接比较 Info.Name，不需要掺进这里。
+func (s *Store) IconFingerprint() (string, error) {
+	info, err := s.Get()
+	if err != nil {
+		return "", err
+	}
+	if info.IconExt == "" {
+		return "", nil
+	}
+	if st, statErr := os.Stat(s.iconPath(info.IconExt)); statErr == nil {
+		return fmt.Sprintf("%s:%d:%d", info.IconExt, st.ModTime().UnixNano(), st.Size()), nil
+	}
+	return info.IconExt, nil
+}
+
 func (s *Store) save(info Info) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return fmt.Errorf("identity: mkdir: %w", err)
@@ -183,5 +203,20 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.WriteFile(tmp, data, perm); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	return renameWithRetry(tmp, path)
+}
+
+// renameWithRetry 尝试原子替换目标文件。Windows 上无法在目标文件正被其他进程/协程
+// 打开读取时完成替换（MoveFileEx 报 sharing violation / access denied）；主服务器
+// 会持续轮询读取 identity.json，管理面板的每一次保存都可能撞上这个窗口。读取方
+// 只在 ReadFile 期间短暂持有句柄，因此短暂重试即可完成替换，不需要跨平台加锁。
+func renameWithRetry(oldpath, newpath string) error {
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		if err = os.Rename(oldpath, newpath); err == nil {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return err
 }

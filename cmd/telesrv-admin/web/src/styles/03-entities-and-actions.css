@@ -639,6 +639,8 @@
 .gift-table-price { color: var(--warn); }
 .gift-limited-badge { display: block; margin-top: 4px; width: fit-content; padding: 2px 6px; font-size: 9px; font-weight: 600; color: var(--purple-text); background: var(--purple-tint); border: 1px solid var(--purple-border); border-radius: 999px; }
 .gift-table-actions { display: flex; align-items: center; gap: 6px; }
+.gift-page-size { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.gift-page-size select { height: 30px; padding: 0 8px; color: var(--text); background: var(--input-bg); border: 1px solid var(--line); border-radius: var(--radius-sm); font: inherit; font-weight: 700; }
 .collectible-button { color: var(--purple); background: var(--purple-tint); border-color: var(--purple-border); }
 .collectible-button:hover { background: var(--purple-tint); border-color: var(--purple); }
 
@@ -1511,16 +1513,27 @@
   resize: vertical;
 }
 
+.identity-save-row {
+  margin-top: 18px;
+}
+
+.template-reset-row {
+  margin-top: 10px;
+}
+
+.template-textarea {
+  resize: none;
+}
+
 .identity-save-row .btn {
   width: 100%;
   justify-content: center;
   min-height: 40px;
 }
 
-.server-icon-fallback {
-  color: var(--muted);
+.server-icon-default {
   background: var(--panel-subtle);
-  border: 1px dashed var(--line-strong);
+  border: 1px solid var(--line-strong);
 }
 
 /* Login-notification template cards: lead paragraphs with the {{...}}
@@ -1732,18 +1745,28 @@
   color: var(--muted);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .service-card-status {
   display: flex;
   align-items: center;
   gap: 5px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 12px;
   font-weight: 700;
   text-transform: capitalize;
   padding: 4px 9px;
   border-radius: 999px;
+}
+
+.service-card-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .service-card.tone-good .service-card-icon { color: var(--good); }

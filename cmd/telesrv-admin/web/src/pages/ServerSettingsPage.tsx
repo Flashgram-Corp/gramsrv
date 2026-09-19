@@ -1,4 +1,4 @@
-import { ChevronDown, CircleCheck, CircleOff, CircleX, Database, ImageOff, ImagePlus, Layers, Loader2, RefreshCw, Server, Trash2, Upload, X } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleOff, CircleX, Database, ImagePlus, Layers, Loader2, RefreshCw, Server, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api, errorMessage } from "../api";
@@ -100,6 +100,11 @@ function IdentitySection() {
 
   useEffect(() => { void load(); }, []);
 
+  // Tells the shell to re-read identity so the sidebar/tab rebrand at once.
+  function notifyIdentityChanged() {
+    window.dispatchEvent(new Event("telesrv:identity-changed"));
+  }
+
   return (
     <section id="serversettings-identity" className="section-block scroll-anchor">
       <SectionHead title={t("serverSettings.identityTitle")} />
@@ -119,9 +124,12 @@ function IdentitySection() {
                   onError={() => setIconFailed(true)}
                 />
               ) : (
-                <div className="avatar-fallback server-icon-fallback" style={{ width: 88, height: 88 }}>
-                  <ImageOff size={26} />
-                </div>
+                <img
+                  className="avatar-photo-img server-icon-default"
+                  src="/logo.png"
+                  alt=""
+                  style={{ width: 88, height: 88 }}
+                />
               )}
               <button
                 className="icon-btn avatar-edit-btn"
@@ -144,7 +152,7 @@ function IdentitySection() {
               label={t("serverSettings.saveIdentity")}
               path="/api/actions/set-server-identity"
               payload={() => ({ name, description })}
-              onDone={() => void load()}
+              onDone={() => { notifyIdentityChanged(); void load(); }}
             />
           </div>
         </div>
@@ -153,7 +161,7 @@ function IdentitySection() {
         <ServerIconModal
           hasIcon={!!identity?.icon_ext}
           onClose={() => setIconModalOpen(false)}
-          onDone={() => { setIconBust((n) => n + 1); setIconFailed(false); void load(); }}
+          onDone={() => { notifyIdentityChanged(); setIconBust((n) => n + 1); setIconFailed(false); void load(); }}
         />
       )}
     </section>
@@ -220,13 +228,14 @@ function LoginNotificationsSection() {
               {phoneIsOverridden ? <span className="badge good">{t("serverSettings.custom")}</span> : <span className="badge">{t("serverSettings.default")}</span>}
             </span>
             <textarea
+              className="template-textarea"
               rows={4}
               value={phoneTemplate}
               onChange={(event) => setPhoneTemplate(event.target.value)}
               placeholder={identity.default_welcome_message_phone_template}
             />
           </label>
-          <div className="gift-table-actions">
+          <div className="gift-table-actions template-reset-row">
             <ActionButton
               tone="neutral"
               compact
@@ -244,13 +253,14 @@ function LoginNotificationsSection() {
               {emailIsOverridden ? <span className="badge good">{t("serverSettings.custom")}</span> : <span className="badge">{t("serverSettings.default")}</span>}
             </span>
             <textarea
+              className="template-textarea"
               rows={4}
               value={emailTemplate}
               onChange={(event) => setEmailTemplate(event.target.value)}
               placeholder={identity.default_welcome_message_email_template}
             />
           </label>
-          <div className="gift-table-actions">
+          <div className="gift-table-actions template-reset-row">
             <ActionButton
               tone="neutral"
               compact
@@ -284,6 +294,7 @@ function LoginNotificationsSection() {
               {codeIsOverridden ? <span className="badge good">{t("serverSettings.custom")}</span> : <span className="badge">{t("serverSettings.default")}</span>}
             </span>
             <textarea
+              className="template-textarea"
               rows={5}
               value={codeTemplate}
               onChange={(event) => setCodeTemplate(event.target.value)}
@@ -297,7 +308,7 @@ function LoginNotificationsSection() {
               </span>
             )}
           </label>
-          <div className="gift-table-actions">
+          <div className="gift-table-actions template-reset-row">
             <ActionButton
               tone="neutral"
               compact
@@ -591,7 +602,7 @@ function ServicesTab() {
 
   const serviceState = (health?: { configured: boolean; ok: boolean; error?: string }): { tone: LiveTone; statusLabel: string; detail?: string } => {
     if (!health?.configured) return { tone: "idle", statusLabel: t("serverSettings.serviceUnconfigured") };
-    if (health.ok) return { tone: "good", statusLabel: t("serverSettings.serviceOk") };
+    if (health.ok) return { tone: "good", statusLabel: t("serverSettings.running") };
     return { tone: "danger", statusLabel: t("serverSettings.serviceDown"), detail: health.error };
   };
 
@@ -616,8 +627,8 @@ function ServicesTab() {
             icon={<Server size={18} />}
             name={t("serverSettings.host")}
             tone="good"
-            statusLabel={status.host.hostname}
-            detail={`${status.host.os} ${status.host.arch} \u00b7 go ${status.host.go_version}`}
+            statusLabel={t("serverSettings.running")}
+            detail={`${status.host.hostname} \u00b7 ${status.host.os} ${status.host.arch} \u00b7 go ${status.host.go_version}`}
           />
           <ServiceCard
             icon={<Database size={18} />}
