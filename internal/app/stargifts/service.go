@@ -231,7 +231,7 @@ func (s *Service) materializeCatalogWrite(ctx context.Context, write *domain.Sta
 		Attributes: []domain.DocumentAttribute{
 			{Kind: domain.DocAttrImageSize, W: 512, H: 512},
 			{Kind: domain.DocAttrSticker, Alt: "🎁"},
-			{Kind: domain.DocAttrFilename, FileName: "gift.tgs"},
+			{Kind: domain.DocAttrFilename, FileName: "AnimatedSticker.tgs"},
 		},
 	}
 	write.Blob = domain.FileBlob{

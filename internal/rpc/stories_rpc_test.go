@@ -20,6 +20,7 @@ import (
 	appupdates "telesrv/internal/app/updates"
 	appusers "telesrv/internal/app/users"
 	"telesrv/internal/domain"
+	"telesrv/internal/store"
 	"telesrv/internal/store/memory"
 )
 
@@ -1140,6 +1141,65 @@ func TestStoriesGetPeerMaxIDsRepeatsDuplicatePeersInOrder(t *testing.T) {
 		if maxID, ok := got[i].GetMaxID(); !ok || maxID != 3 {
 			t.Fatalf("recent stories[%d].max_id = %d ok=%v, want 3 true", i, maxID, ok)
 		}
+	}
+}
+
+func TestStoriesGetPeerMaxIDsBannedChannelKeepsSlotAndErrors(t *testing.T) {
+	ctx := context.Background()
+	userStore := memory.NewUserStore()
+	owner, _ := userStore.Create(ctx, domain.User{AccessHash: 58, Phone: "15550002258", FirstName: "Owner"})
+	kicked, _ := userStore.Create(ctx, domain.User{AccessHash: 59, Phone: "15550002259", FirstName: "Kicked"})
+	channelStore := memory.NewChannelStore()
+	storyStore := memory.NewStoryStore()
+	if _, err := storyStore.UpsertStory(ctx, domain.UpsertStoryRequest{Story: domain.Story{
+		Owner:      domain.Peer{Type: domain.PeerTypeUser, ID: kicked.ID},
+		ID:         7,
+		Date:       1700000000,
+		ExpireDate: 1700003600,
+		Public:     true,
+	}}); err != nil {
+		t.Fatalf("upsert story: %v", err)
+	}
+	r := New(Config{}, Deps{
+		Users:    appusers.NewService(userStore),
+		Channels: appchannels.NewService(channelStore),
+		Stories:  appstories.NewService(storyStore),
+		Sessions: &captureSessions{},
+	}, zaptest.NewLogger(t), fixedClock{now: time.Unix(1700000100, 0)})
+
+	created, err := r.onMessagesCreateChat(WithUserID(ctx, owner.ID), &tg.MessagesCreateChatRequest{
+		Users: []tg.InputUserClass{&tg.InputUser{UserID: kicked.ID, AccessHash: kicked.AccessHash}},
+		Title: "Banned Stories",
+	})
+	if err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	channel := created.Updates.(*tg.Updates).Chats[0].(*tg.Channel)
+	input := &tg.InputChannel{ChannelID: channel.ID, AccessHash: channel.AccessHash}
+
+	if _, err := r.onChannelsEditBanned(WithUserID(ctx, owner.ID), &tg.ChannelsEditBannedRequest{
+		Channel:      input,
+		Participant:  &tg.InputPeerUser{UserID: kicked.ID, AccessHash: kicked.AccessHash},
+		BannedRights: tg.ChatBannedRights{ViewMessages: true},
+	}); err != nil {
+		t.Fatalf("ban member: %v", err)
+	}
+
+	got, err := r.onStoriesGetPeerMaxIDs(WithUserID(ctx, kicked.ID), []tg.InputPeerClass{
+		&tg.InputPeerSelf{},
+		&tg.InputPeerChannel{ChannelID: channel.ID, AccessHash: channel.AccessHash},
+	})
+	if err != nil {
+		t.Fatalf("banned member get peer max ids: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("recent stories length = %d, want one slot per requested peer", len(got))
+	}
+	if maxID, ok := got[0].GetMaxID(); !ok || maxID != 7 {
+		t.Fatalf("recent stories[0] max_id = %d ok=%v, want 7 true", maxID, ok)
+	}
+	if maxID, ok := got[1].GetMaxID(); ok || maxID != 0 || got[1].Live {
+		t.Fatalf("recent stories[1] (banned channel) = %+v, want empty recentStory", got[1])
 	}
 }
 
@@ -8358,12 +8418,13 @@ func TestStoriesEditPrivacyDoesNotFanoutToStoryBlockedViewer(t *testing.T) {
 	if _, err := contactStore.Upsert(ctx, author.ID, domain.ContactInput{ContactUserID: blocked.ID, FirstName: "Blocked"}); err != nil {
 		t.Fatalf("upsert contact: %v", err)
 	}
-	contactsSvc := appcontacts.NewService(contactStore, userStore)
-	if _, err := contactsSvc.BlockContact(ctx, author.ID, blocked.ID, 1700001000); err != nil {
-		t.Fatalf("block story viewer: %v", err)
-	}
 	storyStore := memory.NewStoryStore()
 	updateStore := memory.NewUpdateEventStore()
+	rpcTestBlocklistStores(contactStore, userStore, storyStore, updateStore)
+	contactsSvc := appcontacts.NewService(contactStore, userStore)
+	if _, err := contactsSvc.MutateBlocklist(ctx, store.BlocklistMutation{Kind: store.BlocklistBlock, OwnerUserID: author.ID, PeerIDs: []int64{blocked.ID}, Date: 1700001000}, store.BlocklistDeliveryEffects); err != nil {
+		t.Fatalf("block story viewer: %v", err)
+	}
 	ownerPeer := domain.Peer{Type: domain.PeerTypeUser, ID: author.ID}
 	if _, err := storyStore.UpsertStory(ctx, domain.UpsertStoryRequest{Story: domain.Story{
 		Owner:            ownerPeer,

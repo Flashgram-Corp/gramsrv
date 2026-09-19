@@ -31,6 +31,13 @@ const (
 	ratingListDefaultLimit      = 50
 	ratingListMaxLimit          = 200
 	ratingEventLimit            = 50
+	// Stars ledger pages. The history bound mirrors
+	// domain.MaxStarsTransactionsLimit, so a table page costs the same whichever
+	// surface asks.
+	starsListDefaultLimit    = 50
+	starsListMaxLimit        = 200
+	starsHistoryDefaultLimit = 50
+	starsHistoryMaxLimit     = 100
 	// Verification review queue pages. The bounds mirror app/verification, so the
 	// panel and the admin API page the queue identically.
 	verificationListDefaultLimit = 50
@@ -420,25 +427,28 @@ type ChannelDetail struct {
 }
 
 type StarGiftRow struct {
-	GiftID        int64 `json:"GiftID,string"`
-	RevisionID    int64 `json:"RevisionID,string"`
-	Revision      int
-	Title         string
-	Stars         int64 `json:"Stars,string"`
-	ConvertStars  int64 `json:"ConvertStars,string"`
-	Enabled       bool
-	SortOrder     int
-	DocumentID    int64 `json:"DocumentID,string"`
-	SourceName    string
-	SourceFormat  string
-	AnimationSHA  string
-	AnimationSize int64 `json:"AnimationSize,string"`
-	Width         int
-	Height        int
-	FrameRate     float64
-	ReceivedCount int64 `json:"ReceivedCount,string"`
-	CreatedBy     string
-	UpdatedAt     time.Time
+	GiftID              int64 `json:"GiftID,string"`
+	RevisionID          int64 `json:"RevisionID,string"`
+	Revision            int
+	Title               string
+	Stars               int64 `json:"Stars,string"`
+	ConvertStars        int64 `json:"ConvertStars,string"`
+	Enabled             bool
+	SortOrder           int
+	DocumentID          int64 `json:"DocumentID,string"`
+	SourceName          string
+	SourceFormat        string
+	AnimationSHA        string
+	AnimationSize       int64 `json:"AnimationSize,string"`
+	Width               int
+	Height              int
+	FrameRate           float64
+	ReceivedCount       int64 `json:"ReceivedCount,string"`
+	Limited             bool
+	AvailabilityTotal   int
+	AvailabilityRemains int
+	CreatedBy           string
+	UpdatedAt           time.Time
 }
 
 func (s *readStore) ListStarGifts(ctx context.Context) ([]StarGiftRow, error) {
@@ -447,6 +457,7 @@ SELECT c.gift_id, r.id, r.revision, r.title, r.stars, r.convert_stars,
        c.enabled, c.sort_order, r.document_id, r.source_name, r.source_format,
        encode(r.animation_sha256, 'hex'), d.size, r.width, r.height, r.frame_rate,
        (SELECT COUNT(*) FROM peer_star_gifts p WHERE p.gift_id = c.gift_id),
+       r.limited, r.availability_total, c.availability_remains,
        r.created_by, c.updated_at
 FROM star_gift_catalog c
 JOIN star_gift_catalog_revisions r ON r.id = c.active_revision_id
@@ -464,7 +475,8 @@ LIMIT $1`, domain.MaxStarGiftCatalogSize)
 			&row.GiftID, &row.RevisionID, &row.Revision, &row.Title, &row.Stars, &row.ConvertStars,
 			&row.Enabled, &row.SortOrder, &row.DocumentID, &row.SourceName, &row.SourceFormat,
 			&row.AnimationSHA, &row.AnimationSize, &row.Width, &row.Height, &row.FrameRate,
-			&row.ReceivedCount, &row.CreatedBy, &row.UpdatedAt,
+			&row.ReceivedCount, &row.Limited, &row.AvailabilityTotal, &row.AvailabilityRemains,
+			&row.CreatedBy, &row.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1931,6 +1943,196 @@ WHERE u.id = $1`, userID).Scan(&row.UserID, &row.Username, &row.FirstName)
 	row.NextLevelStars = next
 	row.HasNextLevel = hasNext
 	return row, nil
+}
+
+// StarsAccountRow is one account's current Stars position plus the size of its
+// ledger. The row only exists once an account has any Stars (credits create the
+// balance row), so a drained balance of zero is still visible and findable: an
+// audit has to see the accounts the dupe-paying bug handed stars to even after
+// they spent them. Granted tells whether the starting grant was ever paid out.
+type StarsAccountRow struct {
+	UserID    int64 `json:"UserID,string"`
+	Phone     string
+	Username  string
+	FirstName string
+	LastName  string
+	Balance   int64 `json:"Balance,string"`
+	Granted   bool
+	UpdatedAt time.Time
+	TxnCount  int64 `json:"TxnCount,string"`
+}
+
+// StarsLedgerEntryRow is one signed Stars entry, newest first: positive amounts
+// are credits, negative amounts debits. Reason is the stored reason string
+// ("grant", "topup", "gift", "adjust" for admin grants/debits, ...) and peer is
+// the counterparty when the entry moved stars between two accounts.
+type StarsLedgerEntryRow struct {
+	ID          int64 `json:"ID,string"`
+	Amount      int64 `json:"Amount,string"`
+	Date        int64 `json:"Date,string"`
+	Reason      string
+	Title       string
+	Description string
+	PeerType    string
+	PeerID      int64 `json:"PeerID,string"`
+}
+
+// starsAccountSelectColumns is shared by the leaderboard and the account ledger
+// so both surfaces render the same identity. The transaction-count subquery runs
+// against the (user_id, id DESC) index, so it is cheap on both.
+const starsAccountSelectColumns = `u.id,
+	COALESCE(u.phone, ''),
+	COALESCE(NULLIF(u.username, ''), p.username_lower, '') AS display_username,
+	COALESCE(u.first_name, ''),
+	COALESCE(u.last_name, ''),
+	sb.balance,
+	sb.granted,
+	sb.updated_at,
+	(SELECT count(*) FROM stars_transactions st WHERE st.user_id = sb.user_id)`
+
+const starsAccountFrom = `
+FROM stars_balances sb
+JOIN users u ON u.id = sb.user_id
+LEFT JOIN peer_usernames p ON p.peer_type = 'user' AND p.peer_id = sb.user_id AND p.editable`
+
+func scanStarsAccountRow(scan func(dest ...any) error, item *StarsAccountRow) error {
+	return scan(&item.UserID, &item.Phone, &item.Username, &item.FirstName, &item.LastName,
+		&item.Balance, &item.Granted, &item.UpdatedAt, &item.TxnCount)
+}
+
+// ListStarsTopAccounts pages the Stars leaderboard by current balance, ordered
+// balance DESC with the user id as the stable tie-break. The keyset cursor is the
+// last row's user id, resolved back to its (balance, user_id) position from the
+// balances table in a CTE, exactly like the account-ratings leaderboard.
+//
+// The optional free-text query matches a username prefix (editable or
+// collectible), a first/last name or phone prefix, and a bare number as the user
+// id, mirroring the accounts tab. It also widens the pool: with an empty query
+// the page is the leaderboard proper (balance > 0 only), but once an operator
+// types a search every account that ever had a Stars row is matchable, so a
+// balance spent down to zero is still found during an audit.
+func (s *readStore) ListStarsTopAccounts(ctx context.Context, beforeID int64, limit int, query string) ([]StarsAccountRow, bool, error) {
+	if limit <= 0 {
+		limit = starsListDefaultLimit
+	}
+	if limit > starsListMaxLimit {
+		limit = starsListMaxLimit
+	}
+	query = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(query), "@"), "+"))
+	pattern := ""
+	queryUserID := int64(0)
+	if query != "" {
+		pattern = strings.ToLower(escapeLikePattern(query)) + "%"
+		if parsed, err := strconv.ParseInt(query, 10, 64); err == nil && parsed > 0 {
+			queryUserID = parsed
+		}
+	}
+	rows, err := s.pool.Query(ctx, `
+WITH cursor_row AS (
+	SELECT balance AS c_balance, user_id AS c_user_id
+	FROM stars_balances WHERE $1::bigint <> 0 AND user_id = $1
+)
+SELECT `+starsAccountSelectColumns+starsAccountFrom+`
+LEFT JOIN cursor_row c ON true
+WHERE (($3::text = '' AND sb.balance > 0) OR ($3::text <> '' AND (
+	($4::bigint <> 0 AND sb.user_id = $4)
+	OR lower(COALESCE(u.username, '')) LIKE $2::text
+	OR lower(COALESCE(u.first_name, '')) LIKE $2::text
+	OR lower(COALESCE(u.last_name, '')) LIKE $2::text
+	OR lower(COALESCE(u.phone, '')) LIKE $2::text
+	OR EXISTS (
+		SELECT 1 FROM peer_usernames pu
+		WHERE pu.peer_type = 'user' AND pu.peer_id = sb.user_id
+			AND pu.username_lower LIKE $2::text
+	)
+)))
+AND (
+	c.c_user_id IS NULL
+	OR sb.balance < c.c_balance
+	OR (sb.balance = c.c_balance AND sb.user_id > c.c_user_id)
+)
+ORDER BY sb.balance DESC, sb.user_id
+LIMIT $5::int`, beforeID, pattern, query, queryUserID, limit+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("list stars top accounts: %w", err)
+	}
+	defer rows.Close()
+	out := make([]StarsAccountRow, 0, limit+1)
+	for rows.Next() {
+		var item StarsAccountRow
+		if err := scanStarsAccountRow(rows.Scan, &item); err != nil {
+			return nil, false, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
+// starsAccount resolves one account's current Stars position. An account that
+// never had a Stars row reports errReadNotFound so the API answers 404: there is
+// no ledger to audit and the panel has to say so instead of drawing an empty one.
+func (s *readStore) starsAccount(ctx context.Context, userID int64) (StarsAccountRow, error) {
+	var out StarsAccountRow
+	err := scanStarsAccountRow(s.pool.QueryRow(ctx,
+		`SELECT `+starsAccountSelectColumns+starsAccountFrom+` WHERE sb.user_id = $1`, userID).Scan, &out)
+	switch {
+	case err == nil:
+		return out, nil
+	case errors.Is(err, pgx.ErrNoRows):
+		return out, errReadNotFound
+	default:
+		return out, fmt.Errorf("get stars account: %w", err)
+	}
+}
+
+// StarsAccountLedger returns one account's signed history, newest first, paged
+// by keyset on the transaction id (beforeID = "everything older than this id").
+// The account summary rides along so the detail page renders identity, current
+// balance and ledger size together without a second query.
+func (s *readStore) StarsAccountLedger(ctx context.Context, userID, beforeID int64, limit int) (StarsAccountRow, []StarsLedgerEntryRow, bool, error) {
+	if limit <= 0 {
+		limit = starsHistoryDefaultLimit
+	}
+	if limit > starsHistoryMaxLimit {
+		limit = starsHistoryMaxLimit
+	}
+	account, err := s.starsAccount(ctx, userID)
+	if err != nil {
+		return account, nil, false, err
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, amount, date, reason, title, description, peer_type, COALESCE(peer_id, 0)
+FROM stars_transactions
+WHERE user_id = $1 AND ($2::bigint = 0 OR id < $2)
+ORDER BY id DESC
+LIMIT $3`, userID, beforeID, limit+1)
+	if err != nil {
+		return account, nil, false, fmt.Errorf("list stars ledger: %w", err)
+	}
+	defer rows.Close()
+	out := make([]StarsLedgerEntryRow, 0, limit+1)
+	for rows.Next() {
+		var item StarsLedgerEntryRow
+		if err := rows.Scan(&item.ID, &item.Amount, &item.Date, &item.Reason, &item.Title, &item.Description, &item.PeerType, &item.PeerID); err != nil {
+			return account, nil, false, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return account, nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return account, out, hasMore, nil
 }
 
 func (s *readStore) accountRatingEvents(ctx context.Context, userID int64) ([]AccountRatingEventRow, error) {

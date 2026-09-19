@@ -92,6 +92,16 @@ func validDevStarsPaymentCredentials(credentials tg.InputPaymentCredentialsClass
 	return payload["type"] == "telesrv_dev" && payload["form_id"] == strconv.FormatInt(formID, 10)
 }
 
+// devPaymentsErr reports a denied dev/fiat purchase. The local checkout is
+// denied by default (AllowDevPayments); the purchase simply does not exist
+// here, matching the NOT_IMPLEMENTED policy used for unconfigured purchases.
+func (r *Router) devPaymentsErr() error {
+	if r.cfg.AllowDevPayments {
+		return nil
+	}
+	return notImplementedErr()
+}
+
 func (r *Router) onPaymentsGetStarsGiveawayOptions(ctx context.Context) ([]tg.StarsGiveawayOption, error) {
 	if _, _, err := r.currentUserID(ctx); err != nil {
 		return nil, internalErr()
@@ -319,6 +329,9 @@ func (r *Router) starsGiveawayPaymentForm(ctx context.Context, buyerUserID int64
 	if !ok {
 		return nil, notImplementedErr()
 	}
+	if err := r.devPaymentsErr(); err != nil {
+		return nil, err
+	}
 	now := int(r.clock.Now().Unix())
 	form, err := service.IssuePurchaseForm(ctx, domain.StarsPurchaseForm{
 		Kind: domain.StarsPurchaseGiveaway, BuyerUserID: buyerUserID, Giveaway: giveaway,
@@ -352,7 +365,7 @@ func (r *Router) onPaymentsGetStarGifts(ctx context.Context, hash int) (tg.Payme
 	_ = catalogHash
 	return &tg.PaymentsStarGifts{
 		Hash:  catalogHash,
-		Gifts: tgStarGifts(catalog),
+		Gifts: tgStarGifts(catalog, r.clock.Now().Unix()),
 		Chats: []tg.ChatClass{},
 		Users: []tg.UserClass{},
 	}, nil
@@ -545,6 +558,9 @@ func (r *Router) starsGiftPaymentForm(ctx context.Context, buyerUserID int64, pu
 	if !ok {
 		return nil, notImplementedErr()
 	}
+	if err := r.devPaymentsErr(); err != nil {
+		return nil, err
+	}
 	now := int(r.clock.Now().Unix())
 	form, err := service.IssuePurchaseForm(ctx, domain.StarsPurchaseForm{
 		Kind: domain.StarsPurchaseGift, BuyerUserID: buyerUserID, RecipientUserID: recipient.ID,
@@ -635,6 +651,9 @@ func (r *Router) onPaymentsSendStarsForm(ctx context.Context, req *tg.PaymentsSe
 	if gift.RequirePremium && !buyerPremium {
 		return nil, tgerr400("PREMIUM_ACCOUNT_REQUIRED")
 	}
+	if gift.SupportOnly && !r.viewerSupport(ctx, userID) {
+		return nil, tgerr.New(400, "STARGIFT_USAGE_LIMITED")
+	}
 	upgradeStars := int64(0)
 	if inv.IncludeUpgrade {
 		if gift.UpgradeStars <= 0 || gift.UpgradeIssued >= gift.UpgradeTotal {
@@ -704,6 +723,9 @@ func (r *Router) onPaymentsSendPaymentForm(ctx context.Context, req *tg.Payments
 	userID, _, err := r.currentUserID(ctx)
 	if err != nil {
 		return nil, internalErr()
+	}
+	if err := r.devPaymentsErr(); err != nil {
+		return nil, err
 	}
 	if !validDevStarsPaymentCredentials(req.Credentials, req.FormID) {
 		return nil, tgerr.New(400, "PAYMENT_CREDENTIALS_INVALID")
@@ -881,6 +903,9 @@ func (r *Router) starsTopupPaymentForm(ctx context.Context, userID int64, purpos
 	service, ok := r.deps.Stars.(starsPurchaseService)
 	if !ok {
 		return nil, notImplementedErr()
+	}
+	if err := r.devPaymentsErr(); err != nil {
+		return nil, err
 	}
 	_, peer, err := r.validateStarsTopupPurpose(ctx, userID, purpose)
 	if err != nil {
@@ -1442,7 +1467,7 @@ func (r *Router) tgSavedStarGiftsResponse(ctx context.Context, viewerUserID int6
 	if err != nil {
 		return nil, err
 	}
-	projected := tgSavedStarGifts(viewerUserID, gifts, catalog, availability)
+	projected := tgSavedStarGifts(viewerUserID, gifts, catalog, availability, r.clock.Now().Unix())
 	out := &tg.PaymentsSavedStarGifts{
 		Count: count,
 		Gifts: projected,
@@ -1491,16 +1516,16 @@ func emptySavedStarGifts() *tg.PaymentsSavedStarGifts {
 }
 
 // tgStarGifts 把目录投影为 []tg.StarGiftClass。
-func tgStarGifts(catalog []domain.StarGift) []tg.StarGiftClass {
+func tgStarGifts(catalog []domain.StarGift, now int64) []tg.StarGiftClass {
 	out := make([]tg.StarGiftClass, 0, len(catalog))
 	for _, g := range catalog {
-		out = append(out, tgStarGift(g))
+		out = append(out, tgStarGift(g, now))
 	}
 	return out
 }
 
 // tgStarGift 把目录项投影为 tg.StarGift（Sticker 须为带 sticker 属性的有效 Document）。
-func tgStarGift(g domain.StarGift) *tg.StarGift {
+func tgStarGift(g domain.StarGift, now int64) *tg.StarGift {
 	gift := &tg.StarGift{
 		Limited: g.Limited, SoldOut: g.SoldOut, Birthday: g.Birthday,
 		RequirePremium: g.RequirePremium, LimitedPerUser: g.LimitedPerUser,
@@ -1537,7 +1562,7 @@ func tgStarGift(g domain.StarGift) *tg.StarGift {
 		gift.SetPerUserTotal(g.PerUserTotal)
 		gift.SetPerUserRemains(g.PerUserRemains)
 	}
-	if g.LockedUntilDate > 0 {
+	if g.LockedUntilDate > 0 && int64(g.LockedUntilDate) > now {
 		gift.SetLockedUntilDate(g.LockedUntilDate)
 	}
 	if g.Auction {
@@ -1678,12 +1703,12 @@ func (r *Router) resolveStarGiftCatalog(ctx context.Context, gifts []domain.Save
 }
 
 // tgSavedStarGifts 把已收到礼物实例投影为 []tg.SavedStarGift。
-func tgSavedStarGifts(viewerUserID int64, gifts []domain.SavedStarGift, catalog map[int64]domain.StarGift, availability map[int64]domain.StarGiftCollectibleAvailability) []tg.SavedStarGift {
+func tgSavedStarGifts(viewerUserID int64, gifts []domain.SavedStarGift, catalog map[int64]domain.StarGift, availability map[int64]domain.StarGiftCollectibleAvailability, now int64) []tg.SavedStarGift {
 	out := make([]tg.SavedStarGift, 0, len(gifts))
 	for _, g := range gifts {
 		item := tg.SavedStarGift{
 			Date: g.Date,
-			Gift: tgSavedStarGiftGift(g, catalog, availability),
+			Gift: tgSavedStarGiftGift(g, catalog, availability, now),
 		}
 		if g.NameHidden {
 			item.NameHidden = true
@@ -1764,7 +1789,7 @@ func tgSavedStarGifts(viewerUserID int64, gifts []domain.SavedStarGift, catalog 
 }
 
 // tgSavedStarGiftGift 按收到时的不可变 revision 投影，目录停用或后续改版不影响历史显示。
-func tgSavedStarGiftGift(g domain.SavedStarGift, catalog map[int64]domain.StarGift, availability map[int64]domain.StarGiftCollectibleAvailability) tg.StarGiftClass {
+func tgSavedStarGiftGift(g domain.SavedStarGift, catalog map[int64]domain.StarGift, availability map[int64]domain.StarGiftCollectibleAvailability, now int64) tg.StarGiftClass {
 	if g.Unique != nil {
 		return tgUniqueStarGift(*g.Unique)
 	}
@@ -1774,7 +1799,7 @@ func tgSavedStarGiftGift(g domain.SavedStarGift, catalog map[int64]domain.StarGi
 			gift.UpgradeTotal = current.SupplyTotal
 			gift.UpgradeIssued = current.Issued
 		}
-		out := tgStarGift(gift)
+		out := tgStarGift(gift, now)
 		out.ConvertStars = g.ConvertStars
 		// 拍卖中标的礼物必须显示成交价（中标出价），目录 revision 里存的是起拍价。
 		if g.PaidStars > 0 {

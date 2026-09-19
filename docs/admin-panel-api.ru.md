@@ -277,6 +277,7 @@ PostgreSQL, решения — всегда через Admin API (журнал �
 | `grant-premium` | `user_id` (int64), `months` (int) | `premium.manage` |
 | `upsert-premium-plan` | `months` (int), `duration_days` (int), `amount_stars` (int64), `fiat_currency` (string), `fiat_amount` (int64), `store_product` (string), `store_quantity` (int), `enabled` (bool), `sort_order` (int), `label` (string), `expected_version` (int64) | `premium.manage` |
 | `grant-stars` | `user_id` (int64), `amount` (int64) | — |
+| `debit-stars` | `user_id` (int64), `amount` (int64, 1..1000000000); при недостаточном балансе списание отклоняется | — |
 | `set-verified` | `user_id` (int64), `verified` (bool) | — |
 | `set-account-flags` | `user_id` (int64), `scam` (bool), `fake` (bool) | — |
 | `set-support` | `user_id` (int64), `support` (bool) | — |
@@ -303,6 +304,44 @@ X-CSRF-Token: <csrf из /api/session>
   "user_id": 123456789,
   "months": 12
 }
+```
+
+## API: программный поиск аккаунта (v1)
+
+`POST /v1/accounts/resolve-by-phone` — защищённый bearer-токеном, только
+читающий поиск аккаунта, который использует Telegram-бот магазина в сценарии
+«найти мой ID». Endpoint находит числовой ID аккаунта по номеру телефона без
+приватной проекции просмотра, чтобы бот мог автоматически сохранить серверный
+ID пользователя, если тот уже создал аккаунт. В отличие от всех маршрутов
+`/api/actions/...` запрос не содержит метаданных команды: endpoint никогда не
+меняет состояние и не пишет запись в аудит.
+
+| Поле | Тип | Описание |
+| --- | --- | --- |
+| `phone` | string | Номер в любом формате (пробелы, дефисы, ведущий `+`); нормализуется на сервере функцией `domain.NormalizePhone`. |
+
+Ответ `200 OK`:
+
+| Поле | Тип | Описание |
+| --- | --- | --- |
+| `found` | bool | Найден ли аккаунт с этим номером. |
+| `user_id` | int64 | Числовой ID аккаунта; `0`, если `found` равен `false`. |
+
+Ошибки: `401` — неверный/отсутствующий bearer-токен; `500` — сбой поиска;
+`501` — сборка без бэкенда поиска. Отсутствие номера — это успех с
+`found: false`, а не `404`.
+
+Пример:
+
+```http
+POST /v1/accounts/resolve-by-phone
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "phone": "+79991234567" }
+
+// 200
+{ "found": true, "user_id": 1780243207 }
 ```
 
 ## API: действия над каналами

@@ -76,10 +76,11 @@ type Config struct {
 	// 进程级在途预算；frame 长度读出后、payload 分配前预留。
 	MTProtoInboundFrameGlobalMaxBytes int64
 	// MTProto outbound mailbox 按连接有界；resend pending body 另受 Server 全局预算约束。
-	MTProtoOutboundQueueSize             int
-	MTProtoOutboundControlQueueSize      int
-	MTProtoOutboundTrackedGlobalMaxBytes int64
-	MTProtoOutboundWriteGlobalMaxBytes   int64
+	MTProtoOutboundQueueSize              int
+	MTProtoOutboundControlQueueSize       int
+	MTProtoOutboundTrackedGlobalMaxBytes  int64
+	MTProtoOutboundCriticalGlobalMaxBytes int64
+	MTProtoOutboundWriteGlobalMaxBytes    int64
 
 	// DebugAddr 是 net/http/pprof 调试端点监听地址（CPU/heap/goroutine/mutex/block 剖析）。
 	// telesrv 是宿主进程、不在 docker 内，docker stats 看不到它，性能定位主要靠此端点。
@@ -121,6 +122,11 @@ type Config struct {
 	// 生产应只监听 loopback，并由 nginx 将 /<username>、/addstickers/、/addemoji/、
 	// /addlist/ 与 hash-only /appeal/ 路由反代到该地址。
 	PublicLinkWebAddr string
+	// AllowDevPayments enables the local dev/fiat Stars/Premium checkout
+	// (/payments/dev-stars). Denied by default; enable only in dev/test
+	// environments so production never mints Stars or Premium without a real
+	// XTR payment.
+	AllowDevPayments bool
 	// TelegramLoginEnabled mounts the self-hosted Telegram Login/OIDC provider
 	// on PublicLinkWebAddr. Secrets are file-backed so they are not exposed in
 	// process listings or accidentally copied into tracked .env templates.
@@ -662,6 +668,8 @@ type Config struct {
 	// CallTURNCredentialTTL 是按通话签发的 TURN 凭据有效期。
 	CallTURNCredentialTTL time.Duration
 	// CallForceRelay 强制 p2p_allowed=false（调试 TURN 中继路径用）。
+	// 私聊通话 P2P 默认仅限互为联系人（rpc 层互认联系人硬门槛 + phone_p2p
+	// 默认 AllowContacts）；此开关让整条链路强制走中继。
 	CallForceRelay bool
 
 	// LiveStreamEnable 为 true 时启用频道 RTMP 直播媒体面（内嵌 RTMP ingest + ffmpeg 切段）。
@@ -832,55 +840,57 @@ func Load() (Config, error) {
 		MTProtoRPCExecutionSessionMaxEntries: envIntOr(
 			"TELESRV_MTPROTO_RPC_EXECUTION_SESSION_MAX_ENTRIES", 1<<14,
 		),
-		MTProtoRPCExecutionPendingPerAuth:    envIntOr("TELESRV_MTPROTO_RPC_EXECUTION_PENDING_PER_AUTH", 1<<11),
-		MTProtoInboundFrameGlobalMaxBytes:    envInt64Or("TELESRV_MTPROTO_INBOUND_FRAME_GLOBAL_MAX_BYTES", 512<<20),
-		MTProtoOutboundQueueSize:             envIntOr("TELESRV_MTPROTO_OUTBOUND_QUEUE_SIZE", 128),
-		MTProtoOutboundControlQueueSize:      envIntOr("TELESRV_MTPROTO_OUTBOUND_CONTROL_QUEUE_SIZE", 32),
-		MTProtoOutboundTrackedGlobalMaxBytes: envInt64Or("TELESRV_MTPROTO_OUTBOUND_TRACKED_GLOBAL_MAX_BYTES", 512<<20),
-		MTProtoOutboundWriteGlobalMaxBytes:   envInt64Or("TELESRV_MTPROTO_OUTBOUND_WRITE_GLOBAL_MAX_BYTES", 512<<20),
-		DebugAddr:                            envAllowEmptyOr("TELESRV_DEBUG_ADDR", "127.0.0.1:6060"),
-		BotAPIAddr:                           envAllowEmptyOr("TELESRV_BOT_API_ADDR", ""),
-		AdminAPIAddr:                         envAllowEmptyOr("TELESRV_ADMIN_API_ADDR", ""),
-		AdminAPIToken:                        envOr("TELESRV_ADMIN_API_TOKEN", ""),
-		PublicBaseURL:                        publicBaseURL,
-		Branding:                             brandConfig,
-		UpdatePublicURL:                      updatePublicURL,
-		UpdateServiceURL:                     updateServiceURL,
-		UpdateRequestTimeout:                 envDurationOr("TELESRV_UPDATE_REQUEST_TIMEOUT", 2*time.Second),
-		PublicAppScheme:                      publicAppScheme,
-		PublicAppLinkBase:                    publicAppLinkBase,
-		PublicWebBaseURL:                     publicWebBaseURL,
-		PublicAppName:                        publicAppName,
-		PublicLinkWebAddr:                    envAllowEmptyOr("TELESRV_PUBLIC_LINK_WEB_ADDR", ""),
-		TelegramLoginEnabled:                 envBoolOr("TELESRV_TELEGRAM_LOGIN_ENABLE", false),
-		TelegramLoginIssuer:                  strings.TrimSuffix(envOr("TELESRV_TELEGRAM_LOGIN_ISSUER", publicBaseURL), "/"),
-		TelegramLoginAllowHTTP:               envBoolOr("TELESRV_TELEGRAM_LOGIN_ALLOW_HTTP", false),
-		TelegramLoginSigningKeysFile:         envOr("TELESRV_TELEGRAM_LOGIN_SIGNING_KEYS_FILE", "data/telegram-login/signing-keys.json"),
-		TelegramLoginCodeKeysFile:            envOr("TELESRV_TELEGRAM_LOGIN_CODE_KEYS_FILE", "data/telegram-login/code-keys.json"),
-		TelegramLoginSecretPepperFile:        envOr("TELESRV_TELEGRAM_LOGIN_SECRET_PEPPER_FILE", "data/telegram-login/client-secret-pepper"),
-		TelegramLoginRequestTTL:              envDurationOr("TELESRV_TELEGRAM_LOGIN_REQUEST_TTL", 5*time.Minute),
-		TelegramLoginCodeTTL:                 envDurationOr("TELESRV_TELEGRAM_LOGIN_CODE_TTL", 2*time.Minute),
-		TelegramLoginIDTokenTTL:              envDurationOr("TELESRV_TELEGRAM_LOGIN_ID_TOKEN_TTL", time.Hour),
-		TelegramLoginTrustedProxyCIDRs:       envListOr("TELESRV_TELEGRAM_LOGIN_TRUSTED_PROXY_CIDRS", nil),
-		TelegramLoginRetention:               envDurationOr("TELESRV_TELEGRAM_LOGIN_RETENTION", 7*24*time.Hour),
-		TelegramLoginSweepInterval:           envDurationOr("TELESRV_TELEGRAM_LOGIN_SWEEP_INTERVAL", 5*time.Minute),
-		TelegramLoginSweepBatch:              envIntOr("TELESRV_TELEGRAM_LOGIN_SWEEP_BATCH", 500),
-		AdminUIPermissions:                   envListOr("TELESRV_ADMIN_UI_PERMISSIONS", []string{adminPermissionAll}),
-		AdminScopedTokens:                    adminScopedTokens,
-		AdminUIAddr:                          envOr("TELESRV_ADMIN_UI_ADDR", "127.0.0.1:2600"),
-		AdminUIPassword:                      envOr("TELESRV_ADMIN_UI_PASSWORD", ""),
-		AdminUIToken:                         envOr("TELESRV_ADMIN_UI_TOKEN", ""),
-		AdminSessionKey:                      envOr("TELESRV_ADMIN_SESSION_KEY", ""),
+		MTProtoRPCExecutionPendingPerAuth:     envIntOr("TELESRV_MTPROTO_RPC_EXECUTION_PENDING_PER_AUTH", 1<<11),
+		MTProtoInboundFrameGlobalMaxBytes:     envInt64Or("TELESRV_MTPROTO_INBOUND_FRAME_GLOBAL_MAX_BYTES", 512<<20),
+		MTProtoOutboundQueueSize:              envIntOr("TELESRV_MTPROTO_OUTBOUND_QUEUE_SIZE", 128),
+		MTProtoOutboundControlQueueSize:       envIntOr("TELESRV_MTPROTO_OUTBOUND_CONTROL_QUEUE_SIZE", 32),
+		MTProtoOutboundTrackedGlobalMaxBytes:  envInt64Or("TELESRV_MTPROTO_OUTBOUND_TRACKED_GLOBAL_MAX_BYTES", 512<<20),
+		MTProtoOutboundCriticalGlobalMaxBytes: envInt64Or("TELESRV_MTPROTO_OUTBOUND_CRITICAL_GLOBAL_MAX_BYTES", 64<<20),
+		MTProtoOutboundWriteGlobalMaxBytes:    envInt64Or("TELESRV_MTPROTO_OUTBOUND_WRITE_GLOBAL_MAX_BYTES", 512<<20),
+		DebugAddr:                             envAllowEmptyOr("TELESRV_DEBUG_ADDR", "127.0.0.1:6060"),
+		BotAPIAddr:                            envAllowEmptyOr("TELESRV_BOT_API_ADDR", ""),
+		AdminAPIAddr:                          envAllowEmptyOr("TELESRV_ADMIN_API_ADDR", ""),
+		AdminAPIToken:                         envOr("TELESRV_ADMIN_API_TOKEN", ""),
+		PublicBaseURL:                         publicBaseURL,
+		Branding:                              brandConfig,
+		UpdatePublicURL:                       updatePublicURL,
+		UpdateServiceURL:                      updateServiceURL,
+		UpdateRequestTimeout:                  envDurationOr("TELESRV_UPDATE_REQUEST_TIMEOUT", 2*time.Second),
+		PublicAppScheme:                       publicAppScheme,
+		PublicAppLinkBase:                     publicAppLinkBase,
+		PublicWebBaseURL:                      publicWebBaseURL,
+		PublicAppName:                         publicAppName,
+		PublicLinkWebAddr:                     envAllowEmptyOr("TELESRV_PUBLIC_LINK_WEB_ADDR", ""),
+		AllowDevPayments:                      envBoolOr("TELESRV_ALLOW_DEV_PAYMENTS", false),
+		TelegramLoginEnabled:                  envBoolOr("TELESRV_TELEGRAM_LOGIN_ENABLE", false),
+		TelegramLoginIssuer:                   strings.TrimSuffix(envOr("TELESRV_TELEGRAM_LOGIN_ISSUER", publicBaseURL), "/"),
+		TelegramLoginAllowHTTP:                envBoolOr("TELESRV_TELEGRAM_LOGIN_ALLOW_HTTP", false),
+		TelegramLoginSigningKeysFile:          envOr("TELESRV_TELEGRAM_LOGIN_SIGNING_KEYS_FILE", "data/telegram-login/signing-keys.json"),
+		TelegramLoginCodeKeysFile:             envOr("TELESRV_TELEGRAM_LOGIN_CODE_KEYS_FILE", "data/telegram-login/code-keys.json"),
+		TelegramLoginSecretPepperFile:         envOr("TELESRV_TELEGRAM_LOGIN_SECRET_PEPPER_FILE", "data/telegram-login/client-secret-pepper"),
+		TelegramLoginRequestTTL:               envDurationOr("TELESRV_TELEGRAM_LOGIN_REQUEST_TTL", 5*time.Minute),
+		TelegramLoginCodeTTL:                  envDurationOr("TELESRV_TELEGRAM_LOGIN_CODE_TTL", 2*time.Minute),
+		TelegramLoginIDTokenTTL:               envDurationOr("TELESRV_TELEGRAM_LOGIN_ID_TOKEN_TTL", time.Hour),
+		TelegramLoginTrustedProxyCIDRs:        envListOr("TELESRV_TELEGRAM_LOGIN_TRUSTED_PROXY_CIDRS", nil),
+		TelegramLoginRetention:                envDurationOr("TELESRV_TELEGRAM_LOGIN_RETENTION", 7*24*time.Hour),
+		TelegramLoginSweepInterval:            envDurationOr("TELESRV_TELEGRAM_LOGIN_SWEEP_INTERVAL", 5*time.Minute),
+		TelegramLoginSweepBatch:               envIntOr("TELESRV_TELEGRAM_LOGIN_SWEEP_BATCH", 500),
+		AdminUIPermissions:                    envListOr("TELESRV_ADMIN_UI_PERMISSIONS", []string{adminPermissionAll}),
+		AdminScopedTokens:                     adminScopedTokens,
+		AdminUIAddr:                           envOr("TELESRV_ADMIN_UI_ADDR", "127.0.0.1:2600"),
+		AdminUIPassword:                       envOr("TELESRV_ADMIN_UI_PASSWORD", ""),
+		AdminUIToken:                          envOr("TELESRV_ADMIN_UI_TOKEN", ""),
+		AdminSessionKey:                       envOr("TELESRV_ADMIN_SESSION_KEY", ""),
 
 		// 用 127.0.0.1 而非 localhost：localhost 在 Windows 上会先解析到 IPv6 ::1，而 Docker
 		// Desktop 的端口转发只在 IPv4 监听，IPv6 连接要等 ~1s 超时才回退 IPv4（实测 localhost
 		// 建连 1.0s vs 127.0.0.1 6ms）。冷连接洪峰下池扩容的新连接各等 1s → pre-handler 惊群卡顿。
-		// 生产由 TELESRV_POSTGRES_DSN 覆盖；该默认值仅作用于本地开发。
-		PostgresDSN:      envOr("TELESRV_POSTGRES_DSN", "postgres://telesrv:telesrv@127.0.0.1:5432/telesrv_main?sslmode=disable"),
+		// 生产由 TELESRV_POSTGRES_DSN 覆盖；本地开发从密码变量组装 DSN。
+		PostgresDSN:      postgresDSN(fileEnv),
 		PostgresMaxConns: envIntOr("TELESRV_POSTGRES_MAX_CONNS", 50),
 		PostgresMinConns: envIntOr("TELESRV_POSTGRES_MIN_CONNS", 16),
 		RedisAddr:        envOr("TELESRV_REDIS_ADDR", "127.0.0.1:6399"), // 同理避开 localhost→IPv6 回退延迟
-		RedisPassword:    envOr("TELESRV_REDIS_PASSWORD", ""),
+		RedisPassword:    envAllowEmptyOr("TELESRV_REDIS_PASSWORD", ""),
 		RedisDB:          envIntOr("TELESRV_REDIS_DB", 0),
 
 		DevAuthCode:                       envOr("TELESRV_DEV_AUTH_CODE", "12345"),
@@ -1980,6 +1990,28 @@ func (e envSource) envAllowEmptyOr(key, def string) string {
 	return def
 }
 
+func postgresDSN(e envSource) string {
+	if dsn := e.envOr("TELESRV_POSTGRES_DSN", ""); dsn != "" {
+		return dsn
+	}
+	// Match Compose's ${TELESRV_POSTGRES_PASSWORD:-telesrv}: an explicitly
+	// empty process value overrides the file, then selects the local default.
+	password := e.envAllowEmptyOr("TELESRV_POSTGRES_PASSWORD", "")
+	if password == "" {
+		password = "telesrv"
+	}
+	u := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword("telesrv", password),
+		Host:   "127.0.0.1:5432",
+		Path:   "/telesrv_main",
+	}
+	query := u.Query()
+	query.Set("sslmode", "disable")
+	u.RawQuery = query.Encode()
+	return u.String()
+}
+
 func (e envSource) envListOr(key string, def []string) []string {
 	v := e.envOr(key, "")
 	if v == "" {
@@ -2040,6 +2072,7 @@ func validateStrictMTProtoCapacityEnv(e envSource) error {
 		"TELESRV_MTPROTO_RPC_GLOBAL_MAX_BYTES",
 		"TELESRV_MTPROTO_INBOUND_FRAME_GLOBAL_MAX_BYTES",
 		"TELESRV_MTPROTO_OUTBOUND_TRACKED_GLOBAL_MAX_BYTES",
+		"TELESRV_MTPROTO_OUTBOUND_CRITICAL_GLOBAL_MAX_BYTES",
 		"TELESRV_MTPROTO_OUTBOUND_WRITE_GLOBAL_MAX_BYTES",
 	} {
 		if raw := e.envOr(key, ""); raw != "" {

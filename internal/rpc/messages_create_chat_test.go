@@ -136,6 +136,11 @@ func TestMessagesCreateChatFiltersPrivacyBeforeMembershipWritesRPC(t *testing.T)
 		t.Fatalf("create denied user: %v", err)
 	}
 	privacy := appprivacy.NewService(memory.NewPrivacyStore(), memory.NewContactStore())
+	if _, err := privacy.SetRules(ctx, allowed.ID, domain.PrivacyKeyChatInvite, []domain.PrivacyRule{
+		{Kind: domain.PrivacyRuleAllowAll},
+	}); err != nil {
+		t.Fatalf("set allowed invite privacy: %v", err)
+	}
 	if _, err := privacy.SetRules(ctx, denied.ID, domain.PrivacyKeyChatInvite, []domain.PrivacyRule{
 		{Kind: domain.PrivacyRuleDisallowAll},
 	}); err != nil {

@@ -244,6 +244,9 @@ export type StarGiftRow = {
   Height: number;
   FrameRate: number;
   ReceivedCount: string;
+  Limited: boolean;
+  AvailabilityTotal: number;
+  AvailabilityRemains: number;
   CreatedBy: string;
   UpdatedAt: string;
 };
@@ -554,6 +557,46 @@ export type AccountRatingDetail = {
   events: AccountRatingEventRow[] | null;
 };
 
+// The Stars audit surfaces. Every int64 is tagged `,string` on the backend, so
+// user ids, balances and transaction amounts stay decimal strings and never pass
+// through a float -- a Stars balance outgrows Number.MAX_SAFE_INTEGER almost
+// anywhere the project wants to scale.
+export type StarsAccountRow = {
+  UserID: string;
+  Phone: string;
+  Username: string;
+  FirstName: string;
+  LastName: string;
+  Balance: string;
+  Granted: boolean;
+  UpdatedAt: string;
+  TxnCount: string;
+};
+
+export type StarsTopListResponse = {
+  rows: StarsAccountRow[] | null;
+  has_more: boolean;
+  next_before_id: string;
+};
+
+export type StarsLedgerEntryRow = {
+  ID: string;
+  Amount: string;
+  Date: string;
+  Reason: string;
+  Title: string;
+  Description: string;
+  PeerType: string;
+  PeerID: string;
+};
+
+export type StarsLedgerResponse = {
+  account: StarsAccountRow;
+  entries: StarsLedgerEntryRow[] | null;
+  has_more: boolean;
+  next_before_id: string;
+};
+
 // Official platform verification. Every int64 the backend tags `,string` stays a
 // decimal string here: application ids, peer ids and the optimistic-locking
 // version all outgrow the exact range of a JSON number, and a rounded version
@@ -784,6 +827,56 @@ export type AdminSession = {
 
 export type AdminLoginResult = AdminSession & {
   csrf_token: string;
+};
+
+// One admin console operator. Mirrors AdminConsoleUser in adminusers.go; the
+// password hash deliberately has no representation here.
+export type AdminConsoleUser = {
+  id: number;
+  username: string;
+  permissions: string[];
+  enabled: boolean;
+  token_epoch: number;
+  created_at: string;
+  updated_at: string;
+  last_login_at?: string | null;
+};
+
+// The built-in operator backed by TELESRV_ADMIN_UI_PASSWORD / _TOKEN. It has no
+// database row, so it carries no id and cannot be edited from the panel.
+export type AdminConsoleSystemOperator = {
+  username: string;
+  permissions: string[];
+  enabled: boolean;
+  system: true;
+};
+
+export type AdminConsoleUserList = {
+  system?: AdminConsoleSystemOperator;
+  rows: AdminConsoleUser[];
+  // The rights the server is willing to assign, so the editor cannot drift
+  // from what the routes actually enforce.
+  available_permissions: string[];
+};
+
+// One row of the global action trail served by GET /api/audit-logs (audit.go).
+export type AuditLogEntry = {
+  id: number;
+  command_id: string;
+  actor: string;
+  action: string;
+  dry_run: boolean;
+  reason: string;
+  status: string;
+  error?: string;
+  result?: string;
+  created_at: string;
+  target_type?: string;
+  target_id?: number;
+};
+
+export type AuditLogListResponse = {
+  rows: AuditLogEntry[];
 };
 
 export type MessageDetail = {

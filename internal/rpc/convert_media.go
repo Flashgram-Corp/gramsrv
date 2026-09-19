@@ -10,6 +10,11 @@ import (
 
 const mimeApplicationXTGSticker = "application/x-tgsticker"
 
+// tgAnimatedStickerTGSFileName is the canonical Telegram filename carried by every
+// TGS animated-sticker document on the wire (gift stickers included). Telegram Web
+// (webK) uses it as a hard classifier for Lottie stickers, native clients ignore it.
+const tgAnimatedStickerTGSFileName = "AnimatedSticker.tgs"
+
 // 本文件集中 domain media 值对象 → tg.* 的转换；tg.* 只在 rpc 层出现。
 // 供 reaction / sticker 资源 RPC 与消息 media 共用。
 
@@ -503,7 +508,16 @@ func tgDocumentAttributes(mimeType string, attrs []domain.DocumentAttribute) []t
 			}
 			out = append(out, attr)
 		case domain.DocAttrFilename:
-			out = append(out, &tg.DocumentAttributeFilename{FileName: a.FileName})
+			// All official Telegram TGS documents carry the canonical
+			// "AnimatedSticker.tgs" filename; Telegram Web (webK) classifies a
+			// sticker as Lottie only when mime is x-tgsticker AND the filename
+			// matches exactly, so normalize it on the wire. Native clients
+			// (TDesktop/Android/iOS) key off mime type alone and are unaffected.
+			fileName := a.FileName
+			if mimeType == mimeApplicationXTGSticker && fileName != tgAnimatedStickerTGSFileName {
+				fileName = tgAnimatedStickerTGSFileName
+			}
+			out = append(out, &tg.DocumentAttributeFilename{FileName: fileName})
 		case domain.DocAttrCustomEmoji:
 			out = append(out, &tg.DocumentAttributeCustomEmoji{
 				Free:       a.Free,

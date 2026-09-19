@@ -10,7 +10,7 @@ const fixed = Object.freeze([
   { kind: KINDS.username, code: "uname_1000", title: "Collectible username — 1000 TON", titleRu: "Коллекционный username — 1000 TON", description: "Mint a collectible username", descriptionRu: "Выпустить коллекционный username", starsPrice: 40, bid: 1000 },
 ]);
 
-export function catalog(starsRate = 20) {
+export function catalog(starsRate = 20, prices = {}) {
   const starPackages = [1, 5, 10, 25, 50, 100].map((price) => ({
     kind: KINDS.stars,
     code: `stars_${price}`,
@@ -20,11 +20,12 @@ export function catalog(starsRate = 20) {
     starsPrice: price,
     starsAmount: price * starsRate,
   }));
-  return [...fixed, ...starPackages];
+  const fixedWithOverrides = fixed.map((p) => (p.code in prices ? { ...p, starsPrice: prices[p.code] } : p));
+  return [...fixedWithOverrides, ...starPackages];
 }
 
-export function findProduct(code, starsRate = 20) {
-  const fixedProduct = catalog(starsRate).find((product) => product.code === code);
+export function findProduct(code, starsRate = 20, prices = {}) {
+  const fixedProduct = catalog(starsRate, prices).find((product) => product.code === code);
   if (fixedProduct) return fixedProduct;
   const match = String(code).match(/^stars_([1-9]\d{0,5})$/);
   if (!match) return null;
@@ -41,8 +42,8 @@ export function findProduct(code, starsRate = 20) {
   };
 }
 
-export function productsOfKind(kind, starsRate = 20) {
-  return catalog(starsRate).filter((product) => product.kind === kind);
+export function productsOfKind(kind, starsRate = 20, prices = {}) {
+  return catalog(starsRate, prices).filter((product) => product.kind === kind);
 }
 
 export function localizeProduct(product, language = "en") {
@@ -51,9 +52,10 @@ export function localizeProduct(product, language = "en") {
   return { ...product, title: product.titleRu ?? product.title, description: product.descriptionRu ?? product.description };
 }
 
-export function normalizeUsername(value) {
+export function normalizeUsername(value, minLength = 5) {
+  const length = Math.max(1, Number(minLength));
   const username = String(value ?? "").trim().replace(/^@/, "").toLowerCase();
-  return /^[a-z][a-z0-9_]{4,31}$/.test(username) ? username : "";
+  return new RegExp(`^[a-z][a-z0-9_]{${length - 1},31}$`).test(username) ? username : "";
 }
 
 export function buildPayload(productCode, targetUserID = 0, extra = "", starsAmount = 0) {

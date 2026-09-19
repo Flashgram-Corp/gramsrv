@@ -30,3 +30,6 @@ tmp/
 # IDE
 .idea/
 .vscode/
+
+# Internal server deployment script (not part of the public repository)
+/scripts/install.sh

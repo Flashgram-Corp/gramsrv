@@ -49,7 +49,8 @@
 | `TELESRV_MTPROTO_INBOUND_FRAME_GLOBAL_MAX_BYTES` | int64 bytes / `536870912` | transport wire、最大解密明文以及每个 live outer/nested gzip 输出的进程级在途预算，均在对应 payload 分配前预留。 |
 | `TELESRV_MTPROTO_OUTBOUND_QUEUE_SIZE` | int / `128` | 单连接普通 outbound mailbox 容量。 |
 | `TELESRV_MTPROTO_OUTBOUND_CONTROL_QUEUE_SIZE` | int / `32` | 单连接控制消息 mailbox 容量。 |
-| `TELESRV_MTPROTO_OUTBOUND_TRACKED_GLOBAL_MAX_BYTES` | int64 bytes / `536870912` | 所有逻辑 session 未 ACK 出站 body 的唯一全局预算。物理连接重连复用同一份 `msg_id/seq_no/body`；ACK、destroy 或离线 6 分钟回收时释放，不再另建 RPC cache/spool 副本。 |
+| `TELESRV_MTPROTO_OUTBOUND_TRACKED_GLOBAL_MAX_BYTES` | int64 bytes / `536870912` | ordinary exact body 的进程级 hard cap，不是文件下载流控器。不可变 `upload.getFile` 首写后只按 descriptor 实际 retained charge 计入；文件 logical bytes 由单 session ACK window 控制。 |
+| `TELESRV_MTPROTO_OUTBOUND_CRITICAL_GLOBAL_MAX_BYTES` | int64 bytes / `67108864` | bootstrap/convergence RPC result 的独立 retained reserve；文件 bulk 不能借用，避免 `auth.bindTempAuthKey`、`help.getConfig`、`users.getUsers` 和 difference/state 被下载积压阻断。 |
 | `TELESRV_MTPROTO_OUTBOUND_WRITE_GLOBAL_MAX_BYTES` | int64 bytes / `536870912` | 并发加密 wire/codec/obfuscation scratch 的全局预算。 |
 
 nested gzip admission 不新增环境变量。代码硬限制为：每个
@@ -91,6 +92,7 @@ live expanded buffer 释放后会归还进程内存，但不会返还该 frame �
 | `TELESRV_PUBLIC_WEB_BASE_URL` | HTTP(S) URL / `https://weba.telesrv.net` | username 页面 Web 客户端入口，校验规则同 `TELESRV_PUBLIC_BASE_URL`。 |
 | `TELESRV_PUBLIC_APP_NAME` | string / `TELESRV_BRAND_PRODUCT_NAME` | 公开落地页产品名；trim 后非空、无控制字符、最多 64 个 Unicode 字符。 |
 | `TELESRV_PUBLIC_LINK_WEB_ADDR` | nullable address / 空 | username/avatar/sticker/emoji/chatlist/collectible gift 落地页、hash-only 申诉，以及 unique gift / channel revenue 短期令牌确认页监听；空值关闭，并使 moderation `freeze_account` 申诉、本地 gift export 与频道收益领取 fail-closed。公开落地页保持只读，只有精确 token POST 可提交对应 aggregate。生产应 loopback + nginx 精确反代并关闭 token 路径 access log；`.env.example` 为开发启用 `127.0.0.1:2401`。 |
+| `TELESRV_ALLOW_DEV_PAYMENTS` | bool / `false` | 提供服务本地 dev/fiat 的 Stars/Premium 结算页（`/payments/dev-stars`）。默认拒绝，生产环境不会在没有真实 XTR 支付的情况下凭空铸造 Stars/Premium；仅限 dev/test 环境开启。 |
 | `TELESRV_TELEGRAM_LOGIN_ENABLE` | bool / `false` | 在 `TELESRV_PUBLIC_LINK_WEB_ADDR` 上挂载自建 Telegram Login/OIDC Provider；启用时必须同时配置该 listener 与下列全部密钥文件。 |
 | `TELESRV_TELEGRAM_LOGIN_ISSUER` | 绝对 origin URL / `TELESRV_PUBLIC_BASE_URL` | discovery 与 token 使用的精确公开 issuer；默认必须 HTTPS，禁止 path、credentials、query、fragment。开启下一项后可直接配置任意 HTTP 域名/IP。 |
 | `TELESRV_TELEGRAM_LOGIN_ALLOW_HTTP` | bool / `false` | 开启后允许任意合法 HTTP issuer、BotFather Web origin、redirect URI 和 native HTTP callback，不限制为 loopback，也不限制 IP 网段或端口。关闭时这些 Web URL 仍必须 HTTPS。 |
@@ -420,11 +422,12 @@ active key。不要手工编辑 manifest 或 PEM，不要在各实例上分别�
 
 | 参数 | 类型 / 代码默认值 | 说明与约束 |
 |---|---|---|
-| `TELESRV_POSTGRES_DSN` | secret DSN / `postgres://telesrv:telesrv@127.0.0.1:5432/telesrv_main?sslmode=disable` | 主业务持久库；本地 `main` / `v2` 因迁移历史不同，分别使用 `telesrv_main` / `telesrv_v2`；生产必须替换开发凭证与 TLS 策略。 |
-| `TELESRV_POSTGRES_MAX_CONNS` | int / `50` | pgxpool 最大连接数；`<=0` 使用 pgx 默认值，该默认通常不足以覆盖生产 outbox/RPC 并发。 |
-| `TELESRV_POSTGRES_MIN_CONNS` | int / `16` | pgxpool 预热最小连接数。 |
+| `TELESRV_POSTGRES_DSN` | 可选密钥 DSN | 显式指定主业务持久库连接；为空时本地开发根据 `TELESRV_POSTGRES_PASSWORD` 生成 DSN，生产应显式设置并配置 TLS 策略。 |
+| `TELESRV_POSTGRES_PASSWORD` | 密钥字符串 / `telesrv` | 旧版开发 Compose 的 PostgreSQL 容器密码，以及本地默认 DSN 的密码来源。修改后不会自动修改已有 PostgreSQL 角色，请按 `docs/local-setup.md` 的轮换步骤操作。 |
+| `TELESRV_POSTGRES_MAX_CONNS` | int / `50` | 单个 pgxpool 最大连接数；`<=0` 使用 pgx 默认值。实际新建 backend 还受同一 PostgreSQL 实例的 server-wide advisory admission 限制，不是各进程可相加的静态预算。 |
+| `TELESRV_POSTGRES_MIN_CONNS` | int / `16` | pgxpool 预热最小连接数；minimum 保留，超过 minimum 的 burst connection 在 5 秒 idle 后弹性归还全局 admission slot。 |
 | `TELESRV_REDIS_ADDR` | address / `127.0.0.1:6399` | 验证码、限流、共享更新/缓存易失态使用的 Redis。 |
-| `TELESRV_REDIS_PASSWORD` | secret string / 空 | Redis 密码。 |
+| `TELESRV_REDIS_PASSWORD` | secret string / 空 | Redis 密码，与旧版开发 Compose 容器共用。为空时保留原有开发环境免密行为；修改后需重启客户端进程。 |
 | `TELESRV_REDIS_DB` | int / `0` | Redis 逻辑库编号。 |
 | `TELESRV_LANGPACK_SEED_DIR` | path / `data/langpack` | TDesktop `.strings` 语言包 seed 目录。 |
 | `TELESRV_OFFICIAL_GIFTS_DIR` | path / `data/official-gifts` | `cmd/giftfetch` 生成的只读官方礼物快照；供管理后台选择、验哈希并显式导入。 |
@@ -724,7 +727,7 @@ active key。不要手工编辑 manifest 或 PEM，不要在各实例上分别�
 | `TELESRV_TURN_RELAY_MIN_PORT` | int / `12500` | relay 分配端口范围下界（含）。 |
 | `TELESRV_TURN_RELAY_MAX_PORT` | int / `12999` | relay 分配端口范围上界（含），不得小于下界，防火墙需放行整个范围。 |
 | `TELESRV_CALL_TURN_CREDENTIAL_TTL` | duration / `6h` | 按通话签发的 TURN credential 有效期。 |
-| `TELESRV_CALL_FORCE_RELAY` | bool / `false` | 强制 `p2p_allowed=false`，用于验证 TURN relay 路径。 |
+| `TELESRV_CALL_FORCE_RELAY` | bool / `false` | 强制 `p2p_allowed=false`，用于验证 TURN relay 路径。私聊通话 P2P 默认仅限互为联系人：除非双方互存联系人，否则恒为 `p2p_allowed=false`，陌生人之间永远无法获知对方真实 IP。 |
 | `TELESRV_SFU_ENABLE` | bool / `true` | 启用内嵌群通话媒体转发；false 保留仅信令 M0 模式。 |
 | `TELESRV_SFU_UDP_PORT` | int / `12399` | Pion ICE UDPMux 端口，必须放行防火墙。 |
 | `TELESRV_SFU_ADVERTISE_IP` | string / 空 | 下发给客户端的 ICE candidate IP；空值回退 `TELESRV_ADVERTISE_IP`，loopback 会静默破坏真机媒体。 |

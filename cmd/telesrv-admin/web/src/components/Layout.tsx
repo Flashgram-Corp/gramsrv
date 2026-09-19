@@ -12,6 +12,7 @@ import {
   Megaphone,
   Phone,
   BadgeDollarSign,
+  Coins,
   Server,
   Shield,
   ShieldAlert,
@@ -22,12 +23,14 @@ import {
   Trophy,
   Users,
 	Gift,
-	Send
+	Send,
+	KeyRound,
+	ScrollText
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { LanguageSwitch, useI18n } from "../i18n";
-import { permissionBotVerificationReview, permissionPremiumManage, permissionVerificationReview, useCan } from "../permissions";
+import { permissionAuditRead, permissionAdminsManage, permissionBotVerificationReview, permissionPremiumManage, permissionStarsRead, permissionVerificationReview, useCan } from "../permissions";
 import { type Navigate, type RouteState, routeSubtitle, routeTitle } from "../routing";
 import { ThemeSwitch } from "../theme";
 import { AppLink } from "./AppLink";
@@ -69,6 +72,13 @@ export function Shell({
   // sections are granted independently, so one entry can be visible without the other.
   const canReviewBotVerification = useCan(permissionBotVerificationReview);
   const canManagePremium = useCan(permissionPremiumManage);
+  // The console's own administration and its action trail are granted separately
+  // from every working section: managing operators (admins.manage) or reading
+  // what everyone has done (audit.read) deserves an explicit decision, so the
+  // entries below are not even visible without the matching right.
+  const canManageAdmins = useCan(permissionAdminsManage);
+  const canReadAudit = useCan(permissionAuditRead);
+  const canReadStars = useCan(permissionStarsRead);
   const messagesActive = route.path.startsWith("/messages");
   const [messagesOpen, setMessagesOpen] = useState(messagesActive);
 
@@ -116,6 +126,9 @@ export function Shell({
           <NavLink icon={<AtSign size={16} />} href="/collectible-usernames" route={route} navigate={navigate}>{t("layout.collectibleUsernames")}</NavLink>
           <NavLink icon={<Phone size={16} />} href="/collectible-phones" route={route} navigate={navigate}>{t("layout.collectiblePhones")}</NavLink>
           <NavLink icon={<Trophy size={16} />} href="/account-ratings" route={route} navigate={navigate}>{t("layout.accountRatings")}</NavLink>
+		  {canReadStars && (
+            <NavLink icon={<Coins size={16} />} href="/stars" route={route} navigate={navigate}>{t("layout.stars")}</NavLink>
+          )}
 		  <NavLink icon={<Database size={16} />} href="/storage" route={route} navigate={navigate}>{t("layout.storage")}</NavLink>
 			<NavLink icon={<Gift size={16} />} href="/gifts" route={route} navigate={navigate}>{t("layout.gifts")}</NavLink>
           <NavLink icon={<Send size={16} />} href="/give-gifts" route={route} navigate={navigate}>{t("layout.giveGifts")}</NavLink>
@@ -123,6 +136,12 @@ export function Shell({
           <NavLink icon={<Sticker size={16} />} href="/stickers" route={route} navigate={navigate}>{t("layout.stickers")}</NavLink>
           <NavLink icon={<Smile size={16} />} href="/emoji" route={route} navigate={navigate}>{t("layout.emoji")}</NavLink>
 		  <NavLink icon={<Film size={16} />} href="/gif-catalog" route={route} navigate={navigate}>{t("layout.gifCatalog")}</NavLink>
+          {canManageAdmins && (
+            <NavLink icon={<KeyRound size={16} />} href="/admin-users" route={route} navigate={navigate}>{t("layout.adminUsers")}</NavLink>
+          )}
+          {canReadAudit && (
+            <NavLink icon={<ScrollText size={16} />} href="/audit-log" route={route} navigate={navigate}>{t("layout.auditLog")}</NavLink>
+          )}
           <div className={`nav-section ${messagesActive ? "active" : ""} ${messagesOpen ? "open" : ""}`}>
             <button
               className="nav-section-toggle"

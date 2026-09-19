@@ -33,6 +33,7 @@ type StarGift struct {
 	SoldOut              bool
 	Birthday             bool
 	RequirePremium       bool
+	SupportOnly          bool
 	LimitedPerUser       bool
 	PeerColorAvailable   bool
 	Auction              bool
@@ -895,6 +896,7 @@ type StarGiftCatalogWrite struct {
 	SoldOut              bool
 	Birthday             bool
 	RequirePremium       bool
+	SupportOnly          bool
 	LimitedPerUser       bool
 	PeerColorAvailable   bool
 	Auction              bool
@@ -980,16 +982,46 @@ func (w StarGiftCatalogWrite) ValidateLifecycleAuthoring(now int) error {
 // AvailabilityRemains seeds the client's "N left" projection; auction settlement
 // keeps it in step with gifts_left afterwards.
 func (w *StarGiftCatalogWrite) NormalizeLifecycleAuthoring(now int) {
-	if !w.Auction {
-		return
+	if w.AvailabilityTotal > 0 {
+		w.Limited = true
 	}
-	w.Limited = true
-	if w.AuctionStartDate <= 0 {
-		w.AuctionStartDate = now
+	if w.Auction {
+		w.Limited = true
+		if w.AuctionStartDate <= 0 {
+			w.AuctionStartDate = now
+		}
 	}
-	if w.AvailabilityRemains <= 0 {
+	// Zero on an existing identity can mean exhausted, never uninitialized.
+	// The store preserves its inventory while holding the same lock as purchases.
+	// Negative values must not be silently repaired either.
+	if w.GiftID == 0 && w.Limited && !w.SoldOut && w.AvailabilityRemains == 0 {
 		w.AvailabilityRemains = w.AvailabilityTotal
 	}
+}
+
+// PreserveCatalogInventory applies an existing identity's inventory to a new
+// revision. Call at the write boundary while holding the catalog lock.
+// Replacing a revision edits presentation/pricing, not its original issuance
+// cap. A different cap or sales mode requires a new gift identity.
+func (w *StarGiftCatalogWrite) PreserveCatalogInventory(current StarGift) error {
+	if w.GiftID == 0 || w.GiftID != current.ID {
+		return fmt.Errorf("%w: inventory identity mismatch", ErrStarGiftLifecycleInvalid)
+	}
+	if current.AvailabilityRemains < 0 || current.AvailabilityTotal < 0 ||
+		(current.Limited && (current.AvailabilityTotal == 0 || current.AvailabilityRemains > current.AvailabilityTotal)) ||
+		(!current.Limited && (current.AvailabilityTotal != 0 || current.AvailabilityRemains != 0)) {
+		return fmt.Errorf("%w: invalid persisted inventory", ErrStarGiftLifecycleInvalid)
+	}
+	if w.AvailabilityTotal < 0 || (w.AvailabilityTotal != 0 && w.AvailabilityTotal != current.AvailabilityTotal) ||
+		(w.Limited && !current.Limited) || w.Auction != current.Auction {
+		return fmt.Errorf("%w: existing gift supply and sales mode are immutable; create a new gift", ErrStarGiftLifecycleInvalid)
+	}
+	// Omitted authoring fields mean preserve, not convert to unlimited.
+	w.Limited, w.SoldOut = current.Limited, current.SoldOut
+	w.AvailabilityTotal, w.AvailabilityRemains = current.AvailabilityTotal, current.AvailabilityRemains
+	w.AvailabilityResale, w.ResellMinStars = current.AvailabilityResale, current.ResellMinStars
+	w.FirstSaleDate, w.LastSaleDate = current.FirstSaleDate, current.LastSaleDate
+	return nil
 }
 
 // StarGiftCatalogBundleWrite atomically publishes one catalog revision and its optional

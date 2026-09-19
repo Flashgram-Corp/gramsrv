@@ -572,9 +572,26 @@ WHERE target_user_id=$1 AND pts=$2 AND event_type='user_emoji_status'`, resaleBu
 	// the server swaps that input to a crafted model. TDesktop applies the same
 	// first-slot guard before sending the RPC; keep the store authoritative for
 	// older clients and direct callers.
-	if _, err := pool.Exec(ctx, `UPDATE unique_star_gifts SET gift_address=$2 WHERE id=$1`,
-		transferred.Unique.ID, "EQCraftBaseMustStayImmutable"); err != nil {
+	// 上链必须同时把 saved 聚合标为 exported：unique_star_gift_owner_guard
+	// 约束触发器要求 unique 行与聚合行一致，两次写在同一个显式事务里提交。
+	addressed := "EQCraftBaseMustStayImmutable"
+	markAddressedTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin addressed mark: %v", err)
+	}
+	if _, err := markAddressedTx.Exec(ctx, `UPDATE unique_star_gifts SET owner_peer_type=NULL,owner_peer_id=NULL,
+owner_address=$2,gift_address=$3,craft_chance_permille=0 WHERE id=$1`, transferred.Unique.ID, addressed, addressed); err != nil {
+		_ = markAddressedTx.Rollback(ctx)
 		t.Fatalf("mark first craft input addressed: %v", err)
+	}
+	if _, err := markAddressedTx.Exec(ctx, `UPDATE peer_star_gifts
+SET lifecycle_status='exported',unsaved=true,pinned_order=0,can_craft_at=0 WHERE unique_gift_id=$1`,
+		transferred.Unique.ID); err != nil {
+		_ = markAddressedTx.Rollback(ctx)
+		t.Fatalf("mark first craft input aggregate exported: %v", err)
+	}
+	if err := markAddressedTx.Commit(ctx); err != nil {
+		t.Fatalf("commit addressed mark: %v", err)
 	}
 	addressedReq := domain.StarGiftCraftRequest{UserID: owner.ID,
 		Refs: []domain.SavedStarGiftRef{
@@ -590,8 +607,25 @@ WHERE target_user_id=$1 AND pts=$2 AND event_type='user_emoji_status'`, resaleBu
 		Scan(&addressedBurned); err != nil || addressedBurned {
 		t.Fatalf("addressed craft guard mutated input: burned=%v err=%v", addressedBurned, err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE unique_star_gifts SET gift_address='' WHERE id=$1`, transferred.Unique.ID); err != nil {
+	restoreTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin addressed restore: %v", err)
+	}
+	if _, err := restoreTx.Exec(ctx, `UPDATE unique_star_gifts SET owner_peer_type=$2,owner_peer_id=$3,
+owner_address='',gift_address='',craft_chance_permille=$4 WHERE id=$1`, transferred.Unique.ID,
+		string(transferred.Unique.Owner.Type), transferred.Unique.Owner.ID, transferred.Unique.CraftChancePermille); err != nil {
+		_ = restoreTx.Rollback(ctx)
 		t.Fatalf("restore first craft input address: %v", err)
+	}
+	if _, err := restoreTx.Exec(ctx, `UPDATE peer_star_gifts
+SET lifecycle_status=$2,unsaved=$3,pinned_order=$4,can_craft_at=$5 WHERE unique_gift_id=$1`,
+		transferred.Unique.ID, string(transferred.Saved.LifecycleStatus), transferred.Saved.Unsaved,
+		transferred.Saved.PinnedOrder, transferred.Saved.CanCraftAt); err != nil {
+		_ = restoreTx.Rollback(ctx)
+		t.Fatalf("restore first craft input aggregate: %v", err)
+	}
+	if err := restoreTx.Commit(ctx); err != nil {
+		t.Fatalf("commit addressed restore: %v", err)
 	}
 	crafted, err := lifecycle.CraftStarGift(ctx, domain.StarGiftCraftRequest{UserID: owner.ID,
 		Refs: []domain.SavedStarGiftRef{
@@ -1330,6 +1364,11 @@ WHERE channel_id=$1 AND message::text LIKE '%star_gift_unique%'`, created.Channe
 	var awardSavedID int64
 	if err := pool.QueryRow(ctx, `SELECT saved_gift_id FROM star_gift_auction_acquired WHERE gift_id=$1`, auctionEntry.Gift.ID).Scan(&awardSavedID); err != nil || awardSavedID <= 0 {
 		t.Fatalf("channel auction saved id = %d err %v", awardSavedID, err)
+	}
+	var auctionSoldOut bool
+	if err := pool.QueryRow(ctx, `SELECT r.sold_out FROM star_gift_catalog c
+JOIN star_gift_catalog_revisions r ON r.id=c.active_revision_id WHERE c.gift_id=$1`, auctionEntry.Gift.ID).Scan(&auctionSoldOut); err != nil || !auctionSoldOut {
+		t.Fatalf("exhausted auction gift sold_out=%v want true err=%v", auctionSoldOut, err)
 	}
 	var awardLogs int
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM channel_admin_log_events

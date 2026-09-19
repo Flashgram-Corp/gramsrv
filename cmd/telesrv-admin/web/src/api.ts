@@ -3,8 +3,10 @@ import type {
   AccountListResponse,
   AccountRatingDetail,
   AccountRatingListResponse,
+  AdminConsoleUserList,
   AdminLoginResult,
   AdminSession,
+  AuditLogListResponse,
   BotDetail,
   BotListResponse,
   BroadcastListResponse,
@@ -38,6 +40,8 @@ import type {
   StarGiftListResponse,
   StickerSetListResponse,
   StorageStatsResponse,
+  StarsLedgerResponse,
+  StarsTopListResponse,
   VerificationApplicationDetail,
   VerificationApplicationListResponse,
   VerificationCountsResponse
@@ -146,10 +150,10 @@ export function errorMessage(error: unknown): string {
 
 export const api = {
   session: () => request<AdminSession>("/api/session"),
-  login: async (secret: string) => {
+  login: async (username: string, secret: string) => {
     const result = await request<AdminLoginResult>("/api/login", {
       method: "POST",
-      body: JSON.stringify({ secret })
+      body: JSON.stringify({ username, secret })
     });
     // Stashed here rather than in the caller so no login path can forget it.
     rememberCSRFToken(result.csrf_token);
@@ -176,6 +180,11 @@ export const api = {
     request<AccountRatingListResponse>(`/api/account-ratings?${params.toString()}`),
   accountRating: (userID: string) =>
     request<AccountRatingDetail>(`/api/account-ratings/${encodeURIComponent(userID)}`),
+  starsTop: (params: URLSearchParams) => request<StarsTopListResponse>(`/api/stars/top?${params.toString()}`),
+  // The account id is an int64 decimal string end to end, so it is never parsed
+  // into a number on the way to the URL.
+  starsLedger: (userID: string, params: URLSearchParams) =>
+    request<StarsLedgerResponse>(`/api/stars/ledger/${encodeURIComponent(userID)}?${params.toString()}`),
   dashboard: () => request<DashboardResponse>("/api/dashboard"),
   storageStats: () => request<StorageStatsResponse>("/api/storage/stats"),
   verificationApplications: (params: URLSearchParams) =>
@@ -253,6 +262,8 @@ export const api = {
 	createGifCatalogEntry: (form: FormData) => request<CommandResult>("/api/actions/create-gif-catalog-entry", { method: "POST", body: form }),
 	setAccountAvatar: (form: FormData) => request<CommandResult>("/api/actions/set-account-avatar", { method: "POST", body: form }),
 	setChannelAvatar: (form: FormData) => request<CommandResult>("/api/actions/set-channel-avatar", { method: "POST", body: form }),
+  adminUsers: () => request<AdminConsoleUserList>("/api/admin-users"),
+  auditLogs: (params: URLSearchParams) => request<AuditLogListResponse>(`/api/audit-logs?${params.toString()}`),
   action: (path: string, payload: Record<string, unknown>) => request<CommandResult>(path, {
     method: "POST",
     body: JSON.stringify(payload)

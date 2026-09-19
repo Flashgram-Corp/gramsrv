@@ -741,6 +741,11 @@ first_sale_date=CASE WHEN first_sale_date=0 AND $3>0 THEN $4 ELSE first_sale_dat
 				giftID, giftsLeft, awardedCount, now); err != nil {
 				return err
 			}
+			if giftsLeft <= 0 {
+				if err := s.markCatalogSoldOutTx(ctx, tx, giftID); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})

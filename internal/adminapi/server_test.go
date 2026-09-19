@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -580,6 +581,51 @@ func TestOfficialStarGiftListItemExposesExplicitCapabilities(t *testing.T) {
 
 type fakeService struct{}
 
+type resolveByPhoneService struct {
+	fakeService
+	phone string
+	found bool
+	user  domain.User
+}
+
+func (s *resolveByPhoneService) ResolveUserByPhone(_ context.Context, phone string) (domain.User, bool, error) {
+	s.phone = phone
+	return s.user, s.found, nil
+}
+
+func TestAdminAPIResolveUserByPhone(t *testing.T) {
+	svc := &resolveByPhoneService{found: true, user: domain.User{ID: 1_780_243_207}}
+	srv := &Server{token: "secret", svc: svc}
+	req := httptest.NewRequest(http.MethodPost, "/v1/accounts/resolve-by-phone", strings.NewReader(`{"phone":"+79991234567"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if svc.phone != "+79991234567" {
+		t.Fatalf("decoded phone = %q", svc.phone)
+	}
+	if !strings.Contains(rec.Body.String(), `"found":true`) || !strings.Contains(rec.Body.String(), `"user_id":1780243207`) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestAdminAPIResolveUserByPhoneNotFound(t *testing.T) {
+	svc := &resolveByPhoneService{}
+	srv := &Server{token: "secret", svc: svc}
+	req := httptest.NewRequest(http.MethodPost, "/v1/accounts/resolve-by-phone", strings.NewReader(`{"phone":"+79990000000"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"found":false`) {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
 type captureFreezeService struct {
 	fakeService
 	req admin.SetAccountFrozenRequest
@@ -853,6 +899,17 @@ type captureCollectibleUsernameService struct {
 	assetID  int64
 }
 
+type failingMintService struct {
+	captureCollectibleUsernameService
+	result admin.CommandResult
+	err    error
+}
+
+func (s *failingMintService) MintCollectibleUsername(_ context.Context, req admin.MintCollectibleUsernameRequest) (admin.CommandResult, error) {
+	s.mint = req
+	return s.result, s.err
+}
+
 func (s *captureCollectibleUsernameService) MintCollectibleUsername(_ context.Context, req admin.MintCollectibleUsernameRequest) (admin.CommandResult, error) {
 	s.mint = req
 	return admin.CommandResult{CommandID: req.CommandID, Status: "completed", DryRun: req.DryRun}, nil
@@ -1014,6 +1071,31 @@ func TestAdminAPIMintCollectibleUsernameForwardsExactInt64AndDryRun(t *testing.T
 	if svc.mint.Username != "durov" || svc.mint.OwnerUserID != 1001 || svc.mint.Amount != maxInt64 ||
 		svc.mint.CryptoAmount != 250000000000 || svc.mint.PurchaseDate != 1700000000 || !svc.mint.DryRun {
 		t.Fatalf("decoded mint request = %+v", svc.mint)
+	}
+}
+
+func TestAdminAPIMintCommandFailureCarriesStableCode(t *testing.T) {
+	svc := &failingMintService{result: admin.CommandResult{
+		CommandID: "mint-1", Action: admin.ActionMintCollectibleUsername, Status: "failed",
+		DryRun: true, Error: admin.CodeUsernameOccupied + ": username occupied", Code: admin.CodeUsernameOccupied,
+	}, err: errors.New(admin.CodeUsernameOccupied)}
+	srv := &Server{token: "secret", svc: svc}
+	req := httptest.NewRequest(http.MethodPost, "/v1/collectible-usernames/mint", strings.NewReader(
+		`{"command_id":"mint-1","actor":"ops","reason":"duplicate","dry_run":true,"username":"durov","owner_user_id":"1001","currency":"TON","amount":"0"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	var body struct {
+		Code   string `json:"code"`
+		Error  string `json:"error"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if rec.Code != http.StatusBadRequest || body.Status != "failed" ||
+		body.Code != admin.CodeUsernameOccupied || !strings.Contains(body.Error, admin.CodeUsernameOccupied) {
+		t.Fatalf("status=%d body=%s, want a failed command carrying the stable occupied code", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1206,5 +1288,9 @@ func (fakeService) AccountRatings(context.Context, domain.AccountRatingFilter) (
 }
 
 func (fakeService) AccountRatingEvents(context.Context, int64, int) ([]domain.AccountRatingEvent, error) {
+	return nil, nil
+}
+
+func (fakeService) ListRecentAdminCommands(context.Context, int, string) ([]domain.AdminCommand, error) {
 	return nil, nil
 }

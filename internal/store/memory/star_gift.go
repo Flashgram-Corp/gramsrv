@@ -105,15 +105,22 @@ func (s *StarGiftStore) createCatalogRevisionLocked(write domain.StarGiftCatalog
 	if giftID == 0 {
 		s.nextGiftID++
 		giftID = s.nextGiftID
-	} else if _, ok := s.catalog[giftID]; !ok {
-		return domain.StarGiftCatalogEntry{}, domain.ErrStarGiftNotFound
+	} else {
+		current, ok := s.catalog[giftID]
+		if !ok {
+			return domain.StarGiftCatalogEntry{}, domain.ErrStarGiftNotFound
+		}
+		if err := write.PreserveCatalogInventory(current); err != nil {
+			return domain.StarGiftCatalogEntry{}, err
+		}
 	}
 	s.nextRevID++
 	gift := domain.StarGift{
 		ID: giftID, RevisionID: s.nextRevID, Stars: write.Stars, ConvertStars: write.ConvertStars,
 		Title: write.Title, Sticker: write.Document,
 		Limited: write.Limited, SoldOut: write.SoldOut, Birthday: write.Birthday,
-		RequirePremium: write.RequirePremium, LimitedPerUser: write.LimitedPerUser,
+		RequirePremium: write.RequirePremium, SupportOnly: write.SupportOnly,
+		LimitedPerUser:     write.LimitedPerUser,
 		PeerColorAvailable: write.PeerColorAvailable, Auction: write.Auction,
 		AvailabilityRemains: write.AvailabilityRemains, AvailabilityTotal: write.AvailabilityTotal,
 		AvailabilityResale: write.AvailabilityResale, FirstSaleDate: write.FirstSaleDate,

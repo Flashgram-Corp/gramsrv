@@ -161,6 +161,48 @@ func (s *Service) CanSee(ctx context.Context, ownerUserID, viewerUserID int64, k
 	return Evaluate(rules, evalCtx), nil
 }
 
+// P2PAllowedBetween 决定私聊通话是否允许 P2P 直连。安全默认：除了双方
+// phone_p2p 隐私规则的双向 AND（等价于逐侧 CanSee），还硬性要求主叫与被叫
+// 互为联系人——即使某侧隐私规则显式 AllowAll，非联系人也不可能拿到对方真实 IP，
+// 通话一律回落 TURN 中继。联系人关系或联系人存储不可确证时按拒绝处理（fail
+// closed），这是 rpc 层 P2P 门槛的服务端依据。
+func (s *Service) P2PAllowedBetween(ctx context.Context, callerID, calleeID int64) (bool, error) {
+	if callerID == 0 || calleeID == 0 || callerID == calleeID {
+		return false, nil
+	}
+	if s == nil || s.contacts == nil {
+		return false, nil
+	}
+	callerHasCallee, err := s.reciprocalContact(ctx, callerID, calleeID)
+	if err != nil {
+		return false, err
+	}
+	if !callerHasCallee {
+		return false, nil
+	}
+	calleeHasCaller, err := s.reciprocalContact(ctx, calleeID, callerID)
+	if err != nil {
+		return false, err
+	}
+	if !calleeHasCaller {
+		return false, nil
+	}
+	calleeAllows, err := s.CanSee(ctx, calleeID, callerID, domain.PrivacyKeyPhoneP2P)
+	if err != nil {
+		return false, err
+	}
+	callerAllows, err := s.CanSee(ctx, callerID, calleeID, domain.PrivacyKeyPhoneP2P)
+	if err != nil {
+		return false, err
+	}
+	return calleeAllows && callerAllows, nil
+}
+
+func (s *Service) reciprocalContact(ctx context.Context, userID, contactUserID int64) (bool, error) {
+	_, found, err := s.contacts.Get(ctx, userID, contactUserID)
+	return found, err
+}
+
 // CanSeeAnonymous evaluates one owner's privacy rules for an unauthenticated
 // public-web viewer. Anonymous viewers are never contacts, premium users,
 // close friends, bots, or shared-chat participants; explicit allow-all and
@@ -487,43 +529,7 @@ func dedupNonZero(ids []int64) []int64 {
 }
 
 func Evaluate(rules domain.PrivacyRules, ctx domain.PrivacyContext) bool {
-	if ctx.OwnerUserID != 0 && ctx.OwnerUserID == ctx.ViewerUserID {
-		return true
-	}
-	if len(rules.Rules) == 0 {
-		rules.Rules = domain.DefaultPrivacyRules(rules.Key)
-	}
-	for _, rule := range rules.Rules {
-		if explicitDisallowMatches(rule, ctx) {
-			return false
-		}
-	}
-	for _, rule := range rules.Rules {
-		if explicitAllowMatches(rule, ctx) {
-			return true
-		}
-	}
-	for _, rule := range rules.Rules {
-		switch rule.Kind {
-		case domain.PrivacyRuleDisallowContacts:
-			if ctx.ViewerIsContact {
-				return false
-			}
-		case domain.PrivacyRuleAllowContacts:
-			if ctx.ViewerIsContact {
-				return true
-			}
-		}
-	}
-	for _, rule := range rules.Rules {
-		switch rule.Kind {
-		case domain.PrivacyRuleDisallowAll:
-			return false
-		case domain.PrivacyRuleAllowAll:
-			return true
-		}
-	}
-	return false
+	return domain.EvaluatePrivacy(rules, ctx)
 }
 
 func ValidKey(key domain.PrivacyKey) bool {
@@ -586,52 +592,6 @@ func validateRules(rules []domain.PrivacyRule) error {
 		}
 	}
 	return nil
-}
-
-func explicitDisallowMatches(rule domain.PrivacyRule, ctx domain.PrivacyContext) bool {
-	switch rule.Kind {
-	case domain.PrivacyRuleDisallowUsers:
-		return slices.Contains(rule.UserIDs, ctx.ViewerUserID)
-	case domain.PrivacyRuleDisallowChatParticipants:
-		return intersects(rule.ChatIDs, ctx.SharedChatIDs)
-	case domain.PrivacyRuleDisallowBots:
-		return ctx.ViewerIsBot
-	default:
-		return false
-	}
-}
-
-func explicitAllowMatches(rule domain.PrivacyRule, ctx domain.PrivacyContext) bool {
-	switch rule.Kind {
-	case domain.PrivacyRuleAllowUsers:
-		return slices.Contains(rule.UserIDs, ctx.ViewerUserID)
-	case domain.PrivacyRuleAllowChatParticipants:
-		return intersects(rule.ChatIDs, ctx.SharedChatIDs)
-	case domain.PrivacyRuleAllowCloseFriends:
-		return ctx.ViewerCloseFriend
-	case domain.PrivacyRuleAllowPremium:
-		return ctx.ViewerIsPremium
-	case domain.PrivacyRuleAllowBots:
-		return ctx.ViewerIsBot
-	default:
-		return false
-	}
-}
-
-func intersects(a, b []int64) bool {
-	if len(a) == 0 || len(b) == 0 {
-		return false
-	}
-	set := make(map[int64]struct{}, len(a))
-	for _, id := range a {
-		set[id] = struct{}{}
-	}
-	for _, id := range b {
-		if _, ok := set[id]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func defaultRules(ownerUserID int64, key domain.PrivacyKey) domain.PrivacyRules {

@@ -549,10 +549,13 @@ func writeBotVerificationCommandResult(w http.ResponseWriter, result admin.Comma
 		status = http.StatusBadRequest
 	}
 	if result.CommandID == "" {
-		result = admin.CommandResult{Status: "failed", Message: "command failed", Error: err.Error()}
+		result = admin.CommandResult{Status: "failed", Message: "command failed", Error: err.Error(), Code: code}
 	}
 	if result.Error == "" {
 		result.Error = err.Error()
+	}
+	if result.Code == "" {
+		result.Code = code
 	}
 	if code == admin.CodeCustomVerificationConflict {
 		result.Message = "another operator changed this row first; reload it and try again"

@@ -409,6 +409,19 @@ func (r *Router) registerAccount(d *tlprofile.Dispatcher) {
 
 		return &tg.AccountWebBrowserSettings{}, nil
 	})
+	// account.updateWebBrowserSettings / deleteWebBrowserSettingsExceptions /
+	// toggleWebBrowserSettingsException：telesrv 不接入网页浏览器（web bot）集成。
+	// iOS 会在浏览器设置页调用这些方法，缺 handler 会落到 Unhandled RPC（500
+	// NOT_IMPLEMENTED）。改动是空操作：保持 getWebBrowserSettings 返回的空设置语义。
+	registerRPC[*tg.AccountUpdateWebBrowserSettingsRequest](d, tlprofile.SemanticMethodAccountUpdateWebBrowserSettings, func(ctx context.Context, layerRequest *tg.AccountUpdateWebBrowserSettingsRequest) (any, error) {
+		return &tg.AccountWebBrowserSettings{}, nil
+	})
+	registerRPC[*tg.AccountDeleteWebBrowserSettingsExceptionsRequest](d, tlprofile.SemanticMethodAccountDeleteWebBrowserSettingsExceptions, func(ctx context.Context, layerRequest *tg.AccountDeleteWebBrowserSettingsExceptionsRequest) (any, error) {
+		return &tg.AccountWebBrowserSettings{}, nil
+	})
+	registerRPC[*tg.AccountToggleWebBrowserSettingsExceptionRequest](d, tlprofile.SemanticMethodAccountToggleWebBrowserSettingsException, func(ctx context.Context, layerRequest *tg.AccountToggleWebBrowserSettingsExceptionRequest) (any, error) {
+		return &tg.Updates{}, nil
+	})
 	registerRPC[*tg.AccountGetNotifyExceptionsRequest](d, tlprofile.SemanticMethodAccountGetNotifyExceptions, func(ctx context.Context, layerRequest *tg.AccountGetNotifyExceptionsRequest) (any, error) {
 		return r.onAccountGetNotifyExceptions(ctx, layerRequest)
 	})
@@ -1569,6 +1582,13 @@ func (r *Router) onAccountCheckUsername(ctx context.Context, username string) (b
 	}
 	okUsername, err := svc.CheckUsername(ctx, userID, username)
 	if err != nil {
+		// account.checkUsername is a query: invalid or occupied usernames are
+		// answered with boolFalse instead of a hard RPC error. Clients poll it
+		// on every keystroke while editing a username and treat the error and
+		// the false result identically, so failing the RPC only adds log noise.
+		if errors.Is(err, domain.ErrUsernameInvalid) || errors.Is(err, domain.ErrUsernameOccupied) {
+			return false, nil
+		}
 		return false, usernameErr(err)
 	}
 	return okUsername, nil

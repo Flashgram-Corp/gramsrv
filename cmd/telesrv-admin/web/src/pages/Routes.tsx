@@ -30,12 +30,19 @@ import { VerificationDetailPage } from "./VerificationDetailPage";
 import { VerificationPage } from "./VerificationPage";
 import { StoragePage } from "./StoragePage";
 import { StickerSetsPage } from "./StickerSetsPage";
+import { StarsDetailPage } from "./StarsDetailPage";
+import { StarsPage } from "./StarsPage";
 import {
   PermissionGate,
+  permissionAdminsManage,
+  permissionAuditRead,
   permissionBotVerificationReview,
   permissionPremiumManage,
+  permissionStarsRead,
   permissionVerificationReview
 } from "../permissions";
+import { AdminUsersPage } from "./AdminUsersPage";
+import { AuditLogPage } from "./AuditLogPage";
 
 export function Routes({ route, navigate }: { route: RouteState; navigate: Navigate }) {
   const accountID = route.path.match(/^\/accounts\/(\d+)$/)?.[1];
@@ -77,6 +84,35 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
     return (
       <PermissionGate permission={permissionVerificationReview}>
         <VerificationPage navigate={navigate} />
+      </PermissionGate>
+    );
+  }
+  if (route.path === "/admin-users") {
+    return (
+      <PermissionGate permission={permissionAdminsManage}>
+        <AdminUsersPage />
+      </PermissionGate>
+    );
+  }
+  if (route.path === "/audit-log") {
+    return (
+      <PermissionGate permission={permissionAuditRead}>
+        <AuditLogPage />
+      </PermissionGate>
+    );
+  }
+  const starsUserID = route.path.match(/^\/stars\/(\d+)$/)?.[1];
+  if (starsUserID) {
+    return (
+      <PermissionGate permission={permissionStarsRead}>
+        <StarsDetailPage userID={starsUserID} navigate={navigate} />
+      </PermissionGate>
+    );
+  }
+  if (route.path === "/stars") {
+    return (
+      <PermissionGate permission={permissionStarsRead}>
+        <StarsPage navigate={navigate} />
       </PermissionGate>
     );
   }

@@ -2,6 +2,7 @@ import {
   ChevronDown,
   Coins,
   Crown,
+  Minus,
   Package,
   Plus,
   RefreshCw,
@@ -197,6 +198,10 @@ export function PremiumPlansPage() {
               <div className="premium-action-submit">
                 <ActionButton compact tone="neutral" icon={<Coins size={14} />} label={t("premium.grantStars")}
                   path="/api/actions/grant-stars"
+                  disabled={!selectedUserID || !Number.isSafeInteger(parsedStars) || parsedStars <= 0}
+                  payload={() => ({ user_id: selectedUserID, amount: parsedStars })} />
+                <ActionButton compact tone="danger" icon={<Minus size={14} />} label={t("premium.debitStars")}
+                  path="/api/actions/debit-stars"
                   disabled={!selectedUserID || !Number.isSafeInteger(parsedStars) || parsedStars <= 0}
                   payload={() => ({ user_id: selectedUserID, amount: parsedStars })} />
               </div>

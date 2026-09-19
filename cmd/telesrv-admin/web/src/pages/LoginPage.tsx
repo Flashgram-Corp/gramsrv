@@ -8,6 +8,7 @@ import type { AdminSession } from "../types";
 
 export function LoginPage({ onLogin }: { onLogin: (session: AdminSession) => void }) {
   const { t } = useI18n();
+  const [username, setUsername] = useState("");
   const [secret, setSecret] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -19,7 +20,7 @@ export function LoginPage({ onLogin }: { onLogin: (session: AdminSession) => voi
     try {
       // The login answer carries the permission set and the CSRF token; api.login
       // remembers the token, the session state keeps the rights.
-      const result = await api.login(secret);
+      const result = await api.login(username, secret);
       onLogin({ actor: result.actor, permissions: result.permissions ?? [] });
     } catch (err) {
       setError(errorMessage(err));
@@ -52,16 +53,26 @@ export function LoginPage({ onLogin }: { onLogin: (session: AdminSession) => voi
         {error && <Alert>{error}</Alert>}
         <form className="form-stack" onSubmit={submit}>
           <label>
-            <span>{t("login.secret")}</span>
+            <span>{t("login.username")}</span>
             <input
               autoFocus
+              type="text"
+              value={username}
+              autoComplete="username"
+              spellCheck={false}
+              onChange={(event) => setUsername(event.target.value)}
+            />
+          </label>
+          <label>
+            <span>{t("login.secret")}</span>
+            <input
               type="password"
               value={secret}
               autoComplete="current-password"
               onChange={(event) => setSecret(event.target.value)}
             />
           </label>
-          <button className="btn primary full" type="submit" disabled={busy}>
+          <button className="btn primary full" type="submit" disabled={busy || !username.trim()}>
             {busy ? t("login.submitting") : t("login.submit")}
           </button>
         </form>

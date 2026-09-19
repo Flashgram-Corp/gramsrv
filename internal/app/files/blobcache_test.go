@@ -3,7 +3,12 @@ package files
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"os"
+	"runtime"
+	"sync"
 	"testing"
+	"time"
 
 	"telesrv/internal/domain"
 
@@ -87,6 +92,19 @@ func TestGetFileCachesMetadataAndSmallBlobBytes(t *testing.T) {
 	if c1.Total != 10 {
 		t.Errorf("total = %d, want 10", c1.Total)
 	}
+	if c1.ImmutableRange == nil || c1.ImmutableRange.ObjectKey != objectKey || c1.ImmutableRange.Offset != 0 || c1.ImmutableRange.Length != 5 {
+		t.Fatalf("immutable range = %+v, want exact first chunk descriptor", c1.ImmutableRange)
+	}
+	replaySvc := NewService(media, local, 2)
+	replayed, err := replaySvc.ReadImmutableFileRange(ctx, *c1.ImmutableRange)
+	if err != nil || string(replayed) != "01234" {
+		t.Fatalf("immutable replay = %q err=%v, want 01234", replayed, err)
+	}
+	corrupt := *c1.ImmutableRange
+	corrupt.RangeSHA256[0] ^= 0xff
+	if _, err := replaySvc.ReadImmutableFileRange(ctx, corrupt); err == nil {
+		t.Fatal("corrupt immutable range digest was accepted")
+	}
 	if counting.getBlobCalls != 1 {
 		t.Errorf("getBlobCalls = %d, want 1", counting.getBlobCalls)
 	}
@@ -110,6 +128,184 @@ func TestGetFileCachesMetadataAndSmallBlobBytes(t *testing.T) {
 	}
 }
 
+func TestGetFileByteCacheReturnsSharedReadOnlyViews(t *testing.T) {
+	ctx := context.Background()
+	local, err := NewLocalFS(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	objectKey, err := local.Put(ctx, []byte("0123456789"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	media := newFakeMediaStore()
+	if err := media.PutFileBlob(ctx, domain.FileBlob{
+		LocationKey: "doc:shared-small", Backend: domain.MediaBackendLocalFS,
+		ObjectKey: objectKey, Size: 10, MimeType: "application/octet-stream",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(media, local, 2)
+	if _, ok, err := svc.GetFile(ctx, domain.FileDownloadRequest{LocationKey: "doc:shared-small", Offset: 2, Limit: 4}); err != nil || !ok {
+		t.Fatalf("warm cache ok=%v err=%v", ok, err)
+	}
+	first, ok, err := svc.GetFile(ctx, domain.FileDownloadRequest{LocationKey: "doc:shared-small", Offset: 2, Limit: 4})
+	if err != nil || !ok {
+		t.Fatalf("first cache hit ok=%v err=%v", ok, err)
+	}
+	second, ok, err := svc.GetFile(ctx, domain.FileDownloadRequest{LocationKey: "doc:shared-small", Offset: 2, Limit: 4})
+	if err != nil || !ok {
+		t.Fatalf("second cache hit ok=%v err=%v", ok, err)
+	}
+	if len(first.Bytes) == 0 || &first.Bytes[0] != &second.Bytes[0] {
+		t.Fatal("identical byte-cache ranges did not share immutable backing")
+	}
+	if cap(first.Bytes) != len(first.Bytes) || cap(second.Bytes) != len(second.Bytes) {
+		t.Fatalf("range capacity was not clipped: first=%d/%d second=%d/%d", len(first.Bytes), cap(first.Bytes), len(second.Bytes), cap(second.Bytes))
+	}
+}
+
+type blockingRangeBackend struct {
+	BlobBackend
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	calls   int
+}
+
+func (b *blockingRangeBackend) GetRange(ctx context.Context, objectKey string, offset, limit int64) ([]byte, int64, error) {
+	b.mu.Lock()
+	b.calls++
+	b.mu.Unlock()
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+		return nil, 0, ctx.Err()
+	}
+	return b.BlobBackend.GetRange(ctx, objectKey, offset, limit)
+}
+
+func TestGetFileSingleflightSharesImmutableRangeBacking(t *testing.T) {
+	// A caller can be descheduled between signalling arrival and reaching the
+	// singleflight group, so a loaded CI runner can occasionally produce a
+	// second singleflight generation and a false negative. With a correct
+	// implementation the sharing property holds on every attempt, while a
+	// genuine regression fails deterministically every attempt, so retrying
+	// separates scheduling jitter from a real bug.
+	for attempt := 1; attempt <= 10; attempt++ {
+		if err := exerciseGetFileSingleflightSharing(); err != nil {
+			if attempt == 10 {
+				t.Fatal(err)
+			}
+			continue
+		}
+		return
+	}
+}
+
+func exerciseGetFileSingleflightSharing() error {
+	ctx := context.Background()
+	dir, err := os.MkdirTemp("", "blobcache-singleflight")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	local, err := NewLocalFS(dir)
+	if err != nil {
+		return err
+	}
+	payload := bytes.Repeat([]byte("r"), blobBytesCacheMaxEntryBytes+1024)
+	objectKey, err := local.Put(ctx, payload)
+	if err != nil {
+		return err
+	}
+	media := newFakeMediaStore()
+	if err := media.PutFileBlob(ctx, domain.FileBlob{
+		LocationKey: "doc:shared-range", Backend: domain.MediaBackendLocalFS,
+		ObjectKey: objectKey, Size: int64(len(payload)), MimeType: "application/octet-stream",
+	}); err != nil {
+		return err
+	}
+	backend := &blockingRangeBackend{BlobBackend: local, entered: make(chan struct{}), release: make(chan struct{})}
+	svc := NewService(media, backend, 2)
+
+	const callers = 16
+	results := make(chan domain.FileChunk, callers)
+	errs := make(chan error, callers)
+	start := make(chan struct{})
+	arrived := make(chan struct{}, callers)
+	for range callers {
+		go func() {
+			<-start
+			arrived <- struct{}{}
+			chunk, found, err := svc.GetFile(ctx, domain.FileDownloadRequest{LocationKey: "doc:shared-range", Offset: 17, Limit: 128 << 10})
+			if err == nil && !found {
+				err = context.Canceled
+			}
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- chunk
+		}()
+	}
+	// Launch all callers, then wait for every caller to have been scheduled
+	// into GetFile. The leader is confirmed blocked inside its singleflight
+	// range read; releasing before every caller reaches the shared flight could
+	// let a straggler start a second singleflight generation and observe its
+	// own backing (a false negative), so we settle before unblocking the leader.
+	close(start)
+	for i := 0; i < callers; i++ {
+		<-arrived
+	}
+	<-backend.entered
+	for i := 0; i < 1024; i++ {
+		runtime.Gosched()
+	}
+	time.Sleep(10 * time.Millisecond)
+	close(backend.release)
+
+	var first domain.FileChunk
+	for i := 0; i < callers; i++ {
+		select {
+		case err := <-errs:
+			return err
+		case chunk := <-results:
+			if i == 0 {
+				first = chunk
+				continue
+			}
+			if len(chunk.Bytes) == 0 || &chunk.Bytes[0] != &first.Bytes[0] {
+				return fmt.Errorf("singleflight callers did not share immutable range backing")
+			}
+			if chunk.ImmutableRange == nil || chunk.ImmutableRange.RangeSHA256 != first.ImmutableRange.RangeSHA256 {
+				return fmt.Errorf("singleflight callers did not share exact range digest")
+			}
+		}
+	}
+	backend.mu.Lock()
+	calls := backend.calls
+	backend.mu.Unlock()
+	if calls != 1 {
+		return fmt.Errorf("backend range calls = %d, want 1", calls)
+	}
+	return nil
+}
+
+func BenchmarkViewBlobBytes(b *testing.B) {
+	data := bytes.Repeat([]byte("x"), 128<<10)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
+	for b.Loop() {
+		view := viewBlobBytes(data, 0, int64(len(data)))
+		if len(view) != len(data) {
+			b.Fatal(len(view))
+		}
+	}
+}
+
 func TestGetFileLogsCacheHitMiss(t *testing.T) {
 	ctx := context.Background()
 	local, err := NewLocalFS(t.TempDir())
@@ -125,7 +321,7 @@ func TestGetFileLogsCacheHitMiss(t *testing.T) {
 		t.Fatalf("put blob: %v", err)
 	}
 	blobs := &countingBlobBackend{BlobBackend: local}
-	core, logs := observer.New(zap.InfoLevel)
+	core, logs := observer.New(zap.DebugLevel)
 	svc := NewService(media, blobs, 2, WithLogger(zap.New(core)))
 
 	if _, ok, err := svc.GetFile(ctx, domain.FileDownloadRequest{LocationKey: "doc:log", Offset: 0, Limit: 5}); err != nil || !ok {

@@ -40,6 +40,7 @@ import (
 	"telesrv/internal/app/dialogs"
 	ephemeralapp "telesrv/internal/app/ephemeral"
 	filesapp "telesrv/internal/app/files"
+	"telesrv/internal/app/files/botavatars"
 	groupcallsapp "telesrv/internal/app/groupcalls"
 	"telesrv/internal/app/help"
 	"telesrv/internal/app/langpack"
@@ -78,6 +79,7 @@ import (
 	otpwebhook "telesrv/internal/otpdelivery/webhook"
 	"telesrv/internal/rpc"
 	"telesrv/internal/seed/catalog"
+	freezeseed "telesrv/internal/seed/freeze"
 	"telesrv/internal/sfu"
 	storepkg "telesrv/internal/store"
 	"telesrv/internal/store/memory"
@@ -354,8 +356,10 @@ func mtprotoRuntimeGaugeSamples(snapshot mtprotoedge.RuntimeSnapshot) []obsmetri
 		{Name: "telesrv_mtproto_inbound_frame_byte_limit", Value: float64(snapshot.InboundFrameMaxBytes)},
 		{Name: "telesrv_mtproto_outbound_tracked_bytes", Labels: []obsmetrics.Label{{Name: "kind", Value: "body"}}, Value: float64(snapshot.OutboundTrackedBytes)},
 		{Name: "telesrv_mtproto_outbound_tracked_bytes", Labels: []obsmetrics.Label{{Name: "kind", Value: "control"}}, Value: float64(snapshot.OutboundControlBytes)},
+		{Name: "telesrv_mtproto_outbound_tracked_bytes", Labels: []obsmetrics.Label{{Name: "kind", Value: "critical"}}, Value: float64(snapshot.OutboundCriticalBytes)},
 		{Name: "telesrv_mtproto_outbound_tracked_byte_limit", Labels: []obsmetrics.Label{{Name: "kind", Value: "body"}}, Value: float64(snapshot.OutboundTrackedMaxBytes)},
 		{Name: "telesrv_mtproto_outbound_tracked_byte_limit", Labels: []obsmetrics.Label{{Name: "kind", Value: "control"}}, Value: float64(snapshot.OutboundControlMaxBytes)},
+		{Name: "telesrv_mtproto_outbound_tracked_byte_limit", Labels: []obsmetrics.Label{{Name: "kind", Value: "critical"}}, Value: float64(snapshot.OutboundCriticalMaxBytes)},
 		{Name: "telesrv_mtproto_outbound_write_bytes", Value: float64(snapshot.OutboundWriteBytes)},
 		{Name: "telesrv_mtproto_outbound_write_byte_limit", Value: float64(snapshot.OutboundWriteMaxBytes)},
 		{Name: "telesrv_mtproto_rpc_execution_owners", Value: float64(snapshot.RPCExecutionOwners)},
@@ -989,6 +993,14 @@ func run(logger *zap.Logger) error {
 			zap.Int("blobs", stats.Blobs),
 		)
 	}
+	if stats, err := filesService.SeedFreezeEmoji(ctx); err != nil {
+		return fmt.Errorf("seed freeze emoji: %w", err)
+	} else if stats.Imported {
+		logger.Info("内置 freeze 表情种子导入完成",
+			zap.Int64("document_id", freezeseed.DocumentID),
+			zap.Int64("set_id", freezeseed.SetID),
+		)
+	}
 	if stats, err := filesService.WarmCaches(ctx); err != nil {
 		logger.Warn("媒体资源缓存预热失败", zap.Error(err))
 	} else if stats.StickerSets > 0 || stats.Documents > 0 || stats.Blobs > 0 {
@@ -1264,6 +1276,12 @@ func run(logger *zap.Logger) error {
 	if err := premiumStore.EnsurePremiumBotIdentity(ctx, cfg.PremiumBotUsername); err != nil {
 		return fmt.Errorf("configure Premium bot: %w", err)
 	}
+	// Assign embedded avatars to the built-in system account and bots (idempotent).
+	// Runs after EnsurePremiumBotIdentity so the configured Premium bot ID exists
+	// before the avatar is attached to it.
+	if err := botavatars.Seed(ctx, filesService, time.Now().Unix()); err != nil {
+		return fmt.Errorf("seed bot avatars: %w", err)
+	}
 	premiumService := premiumapp.NewService(premiumStore, premiumapp.Config{
 		BotUserID: cfg.PremiumBotUserID,
 		Username:  cfg.PremiumBotUsername,
@@ -1523,6 +1541,7 @@ func run(logger *zap.Logger) error {
 		UpdatePublicURL:          cfg.UpdatePublicURL,
 		PublicAppScheme:          cfg.PublicAppScheme,
 		PublicAppLinkBase:        cfg.PublicAppLinkBase,
+		AllowDevPayments:         cfg.AllowDevPayments,
 		// PFS temp→perm 解析缓存：显式撤销会清缓存并断开连接，re-bind 即时失效；
 		// 配置 TTL 只承担跨进程/异常失效兜底，避免大连接数周期性打满 PG。
 		TempKeyResolveCacheTTL:         cfg.TempKeyResolveCacheTTL,
@@ -1630,6 +1649,7 @@ func run(logger *zap.Logger) error {
 		Auth:                   authService,
 		Revoker:                router,
 		Users:                  usersService,
+		UserLookup:             userStore,
 		Account:                accountService,
 		Photos:                 filesService,
 		Stars:                  starsService,
@@ -1824,6 +1844,7 @@ func run(logger *zap.Logger) error {
 		AppLinkBase:        cfg.PublicAppLinkBase,
 		WebBaseURL:         cfg.PublicWebBaseURL,
 		AppName:            cfg.PublicAppName,
+		AllowDevPayments:   cfg.AllowDevPayments,
 		StickerSets:        filesService,
 		Users:              userStore,
 		Channels:           channelStore,
@@ -1839,37 +1860,38 @@ func run(logger *zap.Logger) error {
 	}
 
 	srv := mtprotoedge.New(mtprotoedge.Options{
-		Logger:                        logger.Named("mtprotoedge"),
-		DC:                            cfg.DC,
-		StrictDC:                      cfg.StrictDCCheck,
-		RSAKey:                        rsaKey,
-		LayerRPC:                      router,
-		AuthKeys:                      authKeyGetBatchStore,
-		ActiveSessions:                activeSessions,
-		Metrics:                       metricRegistry,
-		ObfuscatedTCP:                 true,
-		WebSocket:                     cfg.WebSocketEnable,
-		WebSocketAllowedOrigins:       cfg.WebSocketAllowedOrigins,
-		MaxConnections:                cfg.MTProtoMaxConnections,
-		MaxConnectionsPerIP:           cfg.MTProtoMaxConnectionsPerIP,
-		MaxConcurrentHandshakes:       cfg.MTProtoMaxConcurrentHandshakes,
-		RPCMaxInflight:                cfg.MTProtoRPCMaxInflight,
-		RPCQueueSize:                  cfg.MTProtoRPCQueueSize,
-		RPCTimeout:                    cfg.MTProtoRPCTimeout,
-		RPCGlobalWorkers:              cfg.MTProtoRPCGlobalWorkers,
-		RPCGlobalMaxTasks:             cfg.MTProtoRPCGlobalMaxTasks,
-		RPCGlobalMaxBytes:             cfg.MTProtoRPCGlobalMaxBytes,
-		RPCDeliveryHookWorkers:        cfg.MTProtoRPCDeliveryHookWorkers,
-		RPCDeliveryHookMaxPending:     cfg.MTProtoRPCDeliveryHookMaxPending,
-		RPCExecutionMaxEntries:        cfg.MTProtoRPCExecutionMaxEntries,
-		RPCExecutionAuthMaxEntries:    cfg.MTProtoRPCExecutionAuthMaxEntries,
-		RPCExecutionSessionMaxEntries: cfg.MTProtoRPCExecutionSessionMaxEntries,
-		RPCExecutionPendingPerAuth:    cfg.MTProtoRPCExecutionPendingPerAuth,
-		InboundFrameGlobalMaxBytes:    cfg.MTProtoInboundFrameGlobalMaxBytes,
-		OutboundQueueSize:             cfg.MTProtoOutboundQueueSize,
-		OutboundControlQueueSize:      cfg.MTProtoOutboundControlQueueSize,
-		OutboundTrackedGlobalMaxBytes: cfg.MTProtoOutboundTrackedGlobalMaxBytes,
-		OutboundWriteGlobalMaxBytes:   cfg.MTProtoOutboundWriteGlobalMaxBytes,
+		Logger:                         logger.Named("mtprotoedge"),
+		DC:                             cfg.DC,
+		StrictDC:                       cfg.StrictDCCheck,
+		RSAKey:                         rsaKey,
+		LayerRPC:                       router,
+		AuthKeys:                       authKeyGetBatchStore,
+		ActiveSessions:                 activeSessions,
+		Metrics:                        metricRegistry,
+		ObfuscatedTCP:                  true,
+		WebSocket:                      cfg.WebSocketEnable,
+		WebSocketAllowedOrigins:        cfg.WebSocketAllowedOrigins,
+		MaxConnections:                 cfg.MTProtoMaxConnections,
+		MaxConnectionsPerIP:            cfg.MTProtoMaxConnectionsPerIP,
+		MaxConcurrentHandshakes:        cfg.MTProtoMaxConcurrentHandshakes,
+		RPCMaxInflight:                 cfg.MTProtoRPCMaxInflight,
+		RPCQueueSize:                   cfg.MTProtoRPCQueueSize,
+		RPCTimeout:                     cfg.MTProtoRPCTimeout,
+		RPCGlobalWorkers:               cfg.MTProtoRPCGlobalWorkers,
+		RPCGlobalMaxTasks:              cfg.MTProtoRPCGlobalMaxTasks,
+		RPCGlobalMaxBytes:              cfg.MTProtoRPCGlobalMaxBytes,
+		RPCDeliveryHookWorkers:         cfg.MTProtoRPCDeliveryHookWorkers,
+		RPCDeliveryHookMaxPending:      cfg.MTProtoRPCDeliveryHookMaxPending,
+		RPCExecutionMaxEntries:         cfg.MTProtoRPCExecutionMaxEntries,
+		RPCExecutionAuthMaxEntries:     cfg.MTProtoRPCExecutionAuthMaxEntries,
+		RPCExecutionSessionMaxEntries:  cfg.MTProtoRPCExecutionSessionMaxEntries,
+		RPCExecutionPendingPerAuth:     cfg.MTProtoRPCExecutionPendingPerAuth,
+		InboundFrameGlobalMaxBytes:     cfg.MTProtoInboundFrameGlobalMaxBytes,
+		OutboundQueueSize:              cfg.MTProtoOutboundQueueSize,
+		OutboundControlQueueSize:       cfg.MTProtoOutboundControlQueueSize,
+		OutboundTrackedGlobalMaxBytes:  cfg.MTProtoOutboundTrackedGlobalMaxBytes,
+		OutboundCriticalGlobalMaxBytes: cfg.MTProtoOutboundCriticalGlobalMaxBytes,
+		OutboundWriteGlobalMaxBytes:    cfg.MTProtoOutboundWriteGlobalMaxBytes,
 		OnServing: func(_ net.Addr) {
 			logger.Info("telesrv 服务就绪",
 				zap.String("listen", cfg.ListenAddr),

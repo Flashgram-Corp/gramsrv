@@ -50,6 +50,41 @@ The development compose file exposes Postgres on `127.0.0.1:5432` and Redis on
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
+The legacy development stack defaults to the Postgres password `telesrv` and
+an empty Redis password. These defaults match the server even without `.env`,
+and an existing empty `TELESRV_REDIS_PASSWORD` remains supported. For a fresh
+volume, set `TELESRV_POSTGRES_PASSWORD` and `TELESRV_REDIS_PASSWORD` in `.env`
+before starting Compose. The server derives its local Postgres DSN from the
+former, including URL encoding, unless `TELESRV_POSTGRES_DSN` is explicitly set.
+Single-quote passwords containing `$` in `.env` so Compose reads them literally.
+Use the same `.env` and process environment for Compose and the server.
+Process password variables take precedence over `.env`, including empty
+values: an empty Postgres password selects `telesrv`, and an empty Redis
+password disables Redis authentication in this development stack.
+
+Changing the Postgres environment variable does not change a role in an
+existing volume. To rotate it, stop the server and other application processes
+that use this database, leaving Postgres running. As a trusted Docker
+administrator, run:
+
+```bash
+docker exec -it telesrv-postgres psql -U telesrv -d postgres -c '\password telesrv'
+```
+
+Enter the new password twice at the prompts. This administrative connection
+uses the container's local socket; it is not a check of the old password.
+After the command succeeds, set `TELESRV_POSTGRES_PASSWORD` in `.env` to the same
+value. If an explicit `TELESRV_POSTGRES_DSN` is configured, update its password
+as well, URL-encoding reserved characters. Then run
+`docker compose -f deploy/docker-compose.yml up -d` and restart the application
+processes. For a Redis password change, also stop its application clients,
+update `TELESRV_REDIS_PASSWORD` in the shared configuration, recreate Redis with
+Compose, and restart the clients.
+
+The Windows `restart-local-server.ps1` helper supplies its own DSN; when using
+a custom Postgres password, pass the matching URL-encoded `-PostgresDSN`
+explicitly. Do not use `down -v` for a password rotation; that deletes the database.
+
 If you use external Postgres or Redis, update `TELESRV_POSTGRES_DSN` and
 `TELESRV_REDIS_ADDR` in `.env`.
 

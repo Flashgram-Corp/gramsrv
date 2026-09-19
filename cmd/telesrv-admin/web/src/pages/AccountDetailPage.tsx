@@ -1,4 +1,4 @@
-import { ArrowLeft, BadgeCheck, CircleAlert, ImagePlus, Sparkles, Star } from "lucide-react";
+import { ArrowLeft, BadgeCheck, CircleAlert, ImagePlus, Minus, Sparkles, Star } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
 import { ActionButton } from "../components/ActionButton";
@@ -198,6 +198,14 @@ export function AccountDetailPage({ id, navigate }: { id: number; navigate: Navi
                 icon={<Star size={15} />}
                 tone="warn"
                 path="/api/actions/grant-stars"
+                payload={() => ({ user_id: account.ID, amount: toInt(starsAmount) })}
+                onDone={load}
+              />
+              <ActionButton
+                label={t("account.debitStars")}
+                icon={<Minus size={15} />}
+                tone="danger"
+                path="/api/actions/debit-stars"
                 payload={() => ({ user_id: account.ID, amount: toInt(starsAmount) })}
                 onDone={load}
               />

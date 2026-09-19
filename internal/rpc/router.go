@@ -78,6 +78,8 @@ type Config struct {
 	// CallSignalingMaxBytes 是 phone.sendSignalingData 单条载荷上限；<=0 不限制。
 	CallSignalingMaxBytes int
 	// CallForceRelay 强制私聊通话 p2p_allowed=false（调试 TURN 中继路径）。
+	// 注意：P2P 默认即安全收紧为仅限互为联系人（phone_turn.go 互认联系人硬门槛），
+	// 此开关仅用于全量回退 TURN 的调试/兜底。
 	CallForceRelay bool
 	// GroupCallMaxParticipants 是群通话单房间参与者上限；<=0 不限制。
 	GroupCallMaxParticipants int
@@ -86,6 +88,11 @@ type Config struct {
 	RtmpIngestURL string
 	// PublicBaseURL 是所有客户端可见 telesrv 链接的公开根 URL。
 	PublicBaseURL string
+	// AllowDevPayments serves the local dev/fiat checkout for Stars and Premium
+	// purchases. Denied by default; when false no dev payment form is issued and
+	// the telesrv_dev checkout path rejects, so production never mints Stars or
+	// Premium without a real XTR payment.
+	AllowDevPayments bool
 	// UpdatePublicURL is advertised as help.getConfig.autoupdate_url_prefix.
 	// Empty keeps the native desktop updater disabled.
 	UpdatePublicURL string
@@ -1078,6 +1085,9 @@ func (r *Router) persistAuthKeyClientInfo(ctx context.Context, info clientSessio
 		return
 	}
 	domainInfo := domainAuthKeyClientInfo(info)
+	if ip, ok := ClientIPFrom(ctx); ok {
+		domainInfo.IP = ip
+	}
 	if domainInfo.Layer == 0 && domainInfo.DeviceModel == "" && domainInfo.Platform == "" &&
 		domainInfo.SystemVersion == "" && domainInfo.APIID == 0 && domainInfo.AppVersion == "" {
 		return
