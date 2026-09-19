@@ -2,9 +2,11 @@ import { CheckCircle2, Gavel, Loader2, RefreshCw, ShieldCheck, Timer, Upload, X 
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, errorMessage } from "../api";
+import { SectionTabs, giftTabs } from "../components/SectionTabs";
 import { Alert, Badge, EmptyRow, Metric, PageFrame } from "../components/ui";
 import { useI18n, type TFunction } from "../i18n";
 import { formatUnix, localInputValue, titleFromFilename, toUnixSeconds } from "../lib/format";
+import type { Navigate } from "../routing";
 import type { CommandResult, StarGiftAuctionRow } from "../types";
 import { LottiePreview } from "./GiftsPage";
 
@@ -63,7 +65,7 @@ function auctionStatus(row: StarGiftAuctionRow, now: number) {
   }
 }
 
-export function AuctionsPage() {
+export function AuctionsPage({ navigate }: { navigate: Navigate }) {
   const { t } = useI18n();
   const [rows, setRows] = useState<StarGiftAuctionRow[]>([]);
   const [busy, setBusy] = useState(false);
@@ -105,6 +107,7 @@ export function AuctionsPage() {
         <button className="btn" type="button" onClick={() => openAuthor("drop")}><Timer size={15} />{t("auctions.newDrop")}</button>
         <button className="btn primary" type="button" onClick={() => openAuthor("auction")}><Gavel size={15} />{t("auctions.newAuction")}</button>
       </>}>
+      <SectionTabs tabs={giftTabs} active="/auctions" navigate={navigate} />
       {error && <Alert>{error}</Alert>}
       <div className="metric-row">
         <Metric label={t("auctions.metricAuctions")} value={String(stats.auctions)} />

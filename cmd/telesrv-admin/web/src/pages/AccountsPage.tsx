@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Loader2, RefreshCw, Search, Smartphone } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Copy, Loader2, RefreshCw, Search, Smartphone } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
 import { Alert, Badge, EmptyRow, Metric, PageFrame, QueryPanel, UsernameCell } from "../components/ui";
@@ -24,6 +24,17 @@ export function AccountsPage({ navigate }: { navigate: Navigate }) {
   const [cursorHistory, setCursorHistory] = useState<AccountCursor[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [copiedID, setCopiedID] = useState<number | null>(null);
+
+  async function copyUserID(userID: number) {
+    try {
+      await navigator.clipboard.writeText(String(userID));
+      setCopiedID(userID);
+      setTimeout(() => setCopiedID((current) => current === userID ? null : current), 1200);
+    } catch {
+      // Clipboard is best-effort.
+    }
+  }
 
   async function loadPage(target: AccountCursor, requestedFilters = filters, resetHistory = false) {
     setBusy(true);
@@ -140,7 +151,17 @@ export function AccountsPage({ navigate }: { navigate: Navigate }) {
           <tbody>
             {data?.rows.map((row) => (
               <tr key={row.ID}>
-                <td className="mono">{row.ID}</td>
+                <td className="mono">
+                  <button
+                    className="copy-id"
+                    type="button"
+                    title={copiedID === row.ID ? t("common.copied") : t("common.copy")}
+                    onClick={() => void copyUserID(row.ID)}
+                  >
+                    <span>{row.ID}</span>
+                    {copiedID === row.ID ? <Check size={12} /> : <Copy size={12} />}
+                  </button>
+                </td>
                 <td>{displayPhone(row.Phone)}</td>
                 <td><UsernameCell username={row.Username} collectibles={row.Collectibles} /></td>
                 <td><span className="table-identity"><Avatar id={row.ID} label={displayName(row)} />{displayName(row)}</span></td>

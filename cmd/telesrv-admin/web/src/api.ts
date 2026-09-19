@@ -46,6 +46,7 @@ import type {
   StarsLedgerResponse,
   StarsTopListResponse,
   SharedDeviceGroupListResponse,
+  UniqueStarGiftListResponse,
   VerificationApplicationDetail,
   VerificationApplicationListResponse,
   VerificationCountsResponse
@@ -181,6 +182,8 @@ export const api = {
     request<CollectiblePhoneListResponse>(`/api/collectible-phones?${params.toString()}`),
   collectiblePhone: (id: string) =>
     request<CollectiblePhoneDetail>(`/api/collectible-phones/${encodeURIComponent(id)}`),
+  nftGifts: (params: URLSearchParams) =>
+    request<UniqueStarGiftListResponse>(`/api/nft-gifts?${params.toString()}`),
   accountRatings: (params: URLSearchParams) =>
     request<AccountRatingListResponse>(`/api/account-ratings?${params.toString()}`),
   accountRating: (userID: string) =>

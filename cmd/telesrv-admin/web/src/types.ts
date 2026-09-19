@@ -409,6 +409,26 @@ export type ModerationCaseDetail = {
   Appeals: ModerationAppeal[];
 };
 
+// One evidence reference plus its frozen snapshot. EvidenceSchemaVersion marks
+// the shape of Evidence; the admin console only ever displays it, never repairs
+// it, so Evidence stays `unknown` here.
+export type ModerationReportItem = {
+  Kind: string;
+  Peer: ModerationPeer;
+  ItemID: number;
+  SecondaryID: number;
+  AuthorUserID: number;
+  EvidenceSchemaVersion: number;
+  Evidence: unknown;
+  EvidenceHash: string;
+};
+
+export type ModerationMediaHold = {
+  ItemIndex: number;
+  Kind: string;
+  StorageKey: string;
+};
+
 export type ModerationReport = {
   ID: number;
   ReporterUserID: number;
@@ -417,8 +437,8 @@ export type ModerationReport = {
   Reason: string;
   Option: string;
   Comment: string;
-  Items: Array<Record<string, unknown>>;
-  MediaHolds: Array<Record<string, unknown>>;
+  Items: ModerationReportItem[];
+  MediaHolds: ModerationMediaHold[];
   CreatedAt: string;
 };
 
@@ -516,6 +536,31 @@ export type CollectibleUsernameListResponse = {
 export type CollectibleUsernameDetail = {
   asset: CollectibleUsernameRow;
   transfers: CollectibleUsernameTransferRow[] | null;
+};
+
+// One minted collectible star gift (an NFT-style, numbered gift instance) as the
+// NFT Items -> NFT Gifts tab lists it. int64 columns arrive as JSON strings.
+export type UniqueStarGiftRow = {
+  ID: string;
+  GiftID: string;
+  Title: string;
+  Slug: string;
+  Num: number;
+  OwnerPeerType: CollectiblePeerType;
+  OwnerPeerID: string;
+  OwnerUsername: string;
+  OwnerName: string;
+  Burned: boolean;
+  Crafted: boolean;
+  KeepOriginalDetails: boolean;
+  CreatedAt: string;
+  UpdatedAt: string;
+};
+
+export type UniqueStarGiftListResponse = {
+  rows: UniqueStarGiftRow[] | null;
+  has_more: boolean;
+  next_before_id: string;
 };
 
 export type CollectiblePhoneTier = "standard" | "exclusive";
@@ -1140,9 +1185,25 @@ export type ServiceHealth = {
   error?: string;
 };
 
+export type DockerService = {
+  name: string;
+  state: string;
+  health: string;
+};
+
+// The Services tab's best-effort Compose view. `available: false` is a normal
+// state (the admin console runs without a Docker socket); `error` explains why.
+export type ServerDockerStatus = {
+  available: boolean;
+  error?: string;
+  compose?: string;
+  services: DockerService[] | null;
+};
+
 export type ServerStatus = {
   host: {
     hostname: string;
+    distro: string;
     os: string;
     arch: string;
     go_version: string;
@@ -1150,4 +1211,5 @@ export type ServerStatus = {
   postgres: ServiceHealth;
   redis: ServiceHealth;
   mtproto: ServiceHealth;
+  docker: ServerDockerStatus;
 };

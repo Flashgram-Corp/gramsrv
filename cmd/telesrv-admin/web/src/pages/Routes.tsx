@@ -6,6 +6,7 @@ import { AccountsPage } from "./AccountsPage";
 import { CollectibleUsernameDetailPage } from "./CollectibleUsernameDetailPage";
 import { CollectibleUsernamesPage } from "./CollectibleUsernamesPage";
 import { CollectiblePhonesPage } from "./CollectiblePhonesPage";
+import { NftGiftsPage } from "./NftGiftsPage";
 import { ChannelDetailPage } from "./ChannelDetailPage";
 import { ChannelsPage } from "./ChannelsPage";
 import { BotDetailPage } from "./BotDetailPage";
@@ -137,7 +138,10 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
     return <CollectibleUsernamesPage navigate={navigate} />;
   }
   if (route.path === "/collectible-phones") {
-    return <CollectiblePhonesPage />;
+    return <CollectiblePhonesPage navigate={navigate} />;
+  }
+  if (route.path === "/nft-gifts") {
+    return <NftGiftsPage navigate={navigate} />;
   }
   if (route.path === "/account-ratings") {
     return <AccountRatingsPage navigate={navigate} />;
@@ -148,7 +152,7 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
   if (route.path === "/monetization" || route.path === "/premium") {
     return (
       <PermissionGate permission={permissionPremiumManage}>
-        <PremiumPlansPage />
+        <PremiumPlansPage navigate={navigate} />
       </PermissionGate>
     );
   }
@@ -196,16 +200,16 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
     return <StickerSetsPage kind="stickers" navigate={navigate} />;
   }
 	if (route.path === "/gif-catalog") {
-		return <GifCatalogPage />;
+		return <GifCatalogPage navigate={navigate} />;
 	}
 	if (route.path === "/gifts") {
-		return <GiftsPage />;
+		return <GiftsPage navigate={navigate} />;
 	}
 	if (route.path === "/give-gifts") {
-		return <GiveGiftsPage />;
+		return <GiveGiftsPage navigate={navigate} />;
 	}
 	if (route.path === "/auctions") {
-		return <AuctionsPage />;
+		return <AuctionsPage navigate={navigate} />;
 	}
   if (route.path === "/messages/detail" || route.path === "/messages/private/detail") {
     return (

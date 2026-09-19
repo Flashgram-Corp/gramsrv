@@ -357,10 +357,16 @@ type serverStatusAPIResponse struct {
 	// MTProto is the core server's TCP listener (config.ListenAddr), probed
 	// from 127.0.0.1.
 	MTProto serviceHealth `json:"mtproto"`
+	// Docker is the live Compose container list, best-effort -- see
+	// dockerStatusBestEffort.
+	Docker serverDockerStatus `json:"docker"`
 }
 
 type serverHostInfo struct {
-	Hostname  string `json:"hostname"`
+	Hostname string `json:"hostname"`
+	// Distro is the human-readable OS name ("Ubuntu 24.04.1 LTS"), which is
+	// what an operator wants on the card; Hostname stays for diagnostics.
+	Distro    string `json:"distro"`
 	OS        string `json:"os"`
 	Arch      string `json:"arch"`
 	GoVersion string `json:"go_version"`
@@ -383,6 +389,7 @@ func (s *server) handleServerStatusAPI(w http.ResponseWriter, r *http.Request) {
 	status := serverStatusAPIResponse{
 		Host: serverHostInfo{
 			Hostname:  hostname,
+			Distro:    hostDistro(),
 			OS:        runtime.GOOS,
 			Arch:      runtime.GOARCH,
 			GoVersion: runtime.Version(),
@@ -390,8 +397,32 @@ func (s *server) handleServerStatusAPI(w http.ResponseWriter, r *http.Request) {
 		Postgres: s.probe(ctx, statusProbe(s.read.Ping)),
 		Redis:    s.probe(ctx, s.probeRedis),
 		MTProto:  s.probe(ctx, s.probeMTProto),
+		Docker:   dockerStatusBestEffort(ctx, s.cfg.RepoRoot),
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+// hostDistro is the display name of the host OS, preferring /etc/os-release's
+// PRETTY_NAME on Linux and falling back to the bare GOOS elsewhere (Windows and
+// macOS dev hosts, where os-release does not exist).
+func hostDistro() string {
+	if runtime.GOOS != "linux" {
+		return runtime.GOOS
+	}
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return "Linux"
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || key != "PRETTY_NAME" {
+			continue
+		}
+		if value = strings.Trim(strings.TrimSpace(value), `"`); value != "" {
+			return value
+		}
+	}
+	return "Linux"
 }
 
 // probe wraps one connectivity check into a serviceHealth record.

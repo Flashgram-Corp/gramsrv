@@ -1806,6 +1806,91 @@ WHERE cu.id = $1`, id).Scan(collectibleUsernameScanDest(&out.Asset)...)
 	return out, nil
 }
 
+// UniqueStarGiftRow is one minted collectible star gift (the NFT-style,
+// numbered gift instance a saved gift turns into after an upgrade) with its
+// holder resolved for display. The panel's "NFT Gifts" tab lists these, NOT
+// the catalog definitions: an operator here is looking at what accounts
+// actually hold, not at what can be bought.
+type UniqueStarGiftRow struct {
+	ID                  int64 `json:"ID,string"`
+	GiftID              int64 `json:"GiftID,string"`
+	Title               string
+	Slug                string
+	Num                 int
+	OwnerPeerType       string
+	OwnerPeerID         int64 `json:"OwnerPeerID,string"`
+	OwnerUsername       string
+	OwnerName           string
+	Burned              bool
+	Crafted             bool
+	KeepOriginalDetails bool
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+const uniqueStarGiftSelectColumns = `u.id, u.gift_id,
+	COALESCE(NULLIF(u.title, ''), NULLIF(r.title, ''), '') AS title,
+	u.slug, u.num, u.owner_peer_type, u.owner_peer_id,
+	COALESCE(NULLIF(ou.username, ''), NULLIF(oc.username, ''), '') AS owner_username,
+	COALESCE(NULLIF(ou.first_name, ''), NULLIF(oc.title, ''), '') AS owner_name,
+	u.burned, u.crafted, u.keep_original_details, u.created_at, u.updated_at`
+
+const uniqueStarGiftJoins = `
+FROM unique_star_gifts u
+LEFT JOIN star_gift_catalog c ON c.gift_id = u.gift_id
+LEFT JOIN star_gift_catalog_revisions r ON r.id = c.active_revision_id
+LEFT JOIN users ou ON u.owner_peer_type = 'user' AND ou.id = u.owner_peer_id
+LEFT JOIN channels oc ON u.owner_peer_type = 'channel' AND oc.id = u.owner_peer_id`
+
+func uniqueStarGiftScanDest(item *UniqueStarGiftRow) []any {
+	return []any{
+		&item.ID, &item.GiftID, &item.Title, &item.Slug, &item.Num,
+		&item.OwnerPeerType, &item.OwnerPeerID, &item.OwnerUsername, &item.OwnerName,
+		&item.Burned, &item.Crafted, &item.KeepOriginalDetails, &item.CreatedAt, &item.UpdatedAt,
+	}
+}
+
+// ListUniqueStarGifts pages over minted gift instances newest first, keyset by
+// descending id. giftID/ownerUserID/q are optional filters; q matches a slug
+// prefix or a title substring, which is how an operator looks a gift up.
+func (s *readStore) ListUniqueStarGifts(ctx context.Context, giftID, ownerUserID, beforeID int64, q string, limit int) ([]UniqueStarGiftRow, bool, error) {
+	if limit <= 0 {
+		limit = collectibleListDefaultLimit
+	}
+	if limit > collectibleListMaxLimit {
+		limit = collectibleListMaxLimit
+	}
+	query := escapeLikePattern(strings.ToLower(strings.TrimSpace(q)))
+	rows, err := s.pool.Query(ctx, `
+SELECT `+uniqueStarGiftSelectColumns+uniqueStarGiftJoins+`
+WHERE ($1::bigint = 0 OR u.gift_id = $1)
+	AND ($2::bigint = 0 OR (u.owner_peer_type = 'user' AND u.owner_peer_id = $2))
+	AND ($3 = '' OR lower(u.slug) LIKE $3 || '%' OR lower(COALESCE(NULLIF(u.title, ''), r.title, '')) LIKE '%' || $3 || '%')
+	AND ($4::bigint = 0 OR u.id < $4)
+ORDER BY u.id DESC
+LIMIT $5`, giftID, ownerUserID, query, beforeID, limit+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("list unique star gifts: %w", err)
+	}
+	defer rows.Close()
+	out := make([]UniqueStarGiftRow, 0, limit+1)
+	for rows.Next() {
+		var item UniqueStarGiftRow
+		if err := rows.Scan(uniqueStarGiftScanDest(&item)...); err != nil {
+			return nil, false, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
 func (s *readStore) collectibleUsernameTransfers(ctx context.Context, collectibleID int64) ([]CollectibleUsernameTransferRow, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT t.id, t.collectible_id, t.kind,

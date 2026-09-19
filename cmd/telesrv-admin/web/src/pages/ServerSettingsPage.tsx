@@ -1,11 +1,11 @@
-import { ChevronDown, CircleCheck, CircleOff, CircleX, Database, ImagePlus, Layers, Loader2, RefreshCw, Server, Trash2, Upload, X } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleOff, CircleX, Container, Database, ImagePlus, Layers, Loader2, RefreshCw, Server, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api, errorMessage } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { Alert, LoadingSurface, PageFrame, SectionHead } from "../components/ui";
 import { useI18n } from "../i18n";
-import type { EnvGroup, ServerIdentity, ServerStatus } from "../types";
+import type { DockerService, EnvGroup, ServerIdentity, ServerStatus } from "../types";
 
 // Server Settings: the panel's equivalent of owpengram's server-panel menu —
 // admin-editable server name/description/icon, login-notification template
@@ -229,7 +229,7 @@ function LoginNotificationsSection() {
             </span>
             <textarea
               className="template-textarea"
-              rows={4}
+              rows={8}
               value={phoneTemplate}
               onChange={(event) => setPhoneTemplate(event.target.value)}
               placeholder={identity.default_welcome_message_phone_template}
@@ -254,7 +254,7 @@ function LoginNotificationsSection() {
             </span>
             <textarea
               className="template-textarea"
-              rows={4}
+              rows={8}
               value={emailTemplate}
               onChange={(event) => setEmailTemplate(event.target.value)}
               placeholder={identity.default_welcome_message_email_template}
@@ -576,10 +576,36 @@ function ServiceCard({
   );
 }
 
+const dockerServiceIcon: Record<string, ReactNode> = {
+  postgres: <Database size={18} />,
+  redis: <Layers size={18} />
+};
+
+// dockerTone/dockerStatusLabel map `docker compose ps` output onto the same
+// card tones the reachability probes use: a container that is not running (or
+// is unhealthy) is a real problem; `starting` is transient, not a failure.
+function dockerTone(service: DockerService): LiveTone {
+  const state = service.state.toLowerCase();
+  const health = service.health.toLowerCase();
+  if (state !== "running") return "danger";
+  if (health === "unhealthy") return "danger";
+  if (health === "starting") return "warn";
+  return "good";
+}
+
+function dockerStatusLabel(service: DockerService): string {
+  const state = service.state.toLowerCase();
+  if (state !== "running") return service.state || "stopped";
+  if (service.health) return service.health.charAt(0).toUpperCase() + service.health.slice(1);
+  return "Running";
+}
+
 // ServicesTab reports reachability of the pieces this deployment depends on.
 // Unlike the reference there is no process/docker control to watch (restart is
 // a deploy script), so the screen is deliberately static-but-refreshable and
-// reads at a glance rather than being polled against an upcoming bounce.
+// reads at a glance rather than being polled against an upcoming bounce. The
+// Compose container list is best-effort: the admin console normally runs
+// without a Docker socket, so an unavailable list is explained, not alarmed on.
 function ServicesTab() {
   const { t } = useI18n();
   const [status, setStatus] = useState<ServerStatus | null>(null);
@@ -628,24 +654,28 @@ function ServicesTab() {
             name={t("serverSettings.host")}
             tone="good"
             statusLabel={t("serverSettings.running")}
-            detail={`${status.host.hostname} \u00b7 ${status.host.os} ${status.host.arch} \u00b7 go ${status.host.go_version}`}
-          />
-          <ServiceCard
-            icon={<Database size={18} />}
-            name={t("serverSettings.postgres")}
-            {...serviceState(status.postgres)}
-          />
-          <ServiceCard
-            icon={<Layers size={18} />}
-            name={t("serverSettings.redis")}
-            {...serviceState(status.redis)}
+            detail={`${status.host.distro || status.host.hostname} \u00b7 ${status.host.os} ${status.host.arch} \u00b7 go ${status.host.go_version}`}
           />
           <ServiceCard
             icon={<CircleOff size={18} />}
             name={t("serverSettings.mtproto")}
             {...serviceState(status.mtproto)}
           />
+          {status.docker?.services?.map((service) => (
+            <ServiceCard
+              key={service.name}
+              icon={dockerServiceIcon[service.name] ?? <Container size={18} />}
+              name={service.name}
+              tone={dockerTone(service)}
+              statusLabel={dockerStatusLabel(service)}
+            />
+          ))}
         </div>
+      )}
+      {status && !status.docker?.available && (
+        <p className="muted-lead">
+          {t("serverSettings.dockerUnavailable", { reason: status.docker?.error || "docker not reachable" })}
+        </p>
       )}
     </section>
   );

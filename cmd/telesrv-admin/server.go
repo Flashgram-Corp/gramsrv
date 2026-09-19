@@ -110,6 +110,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/collectible-usernames/{id}", s.scopedRoute(permissionUsernamesRead, http.HandlerFunc(s.handleCollectibleUsernameDetailAPI)))
 	mux.Handle("GET /api/collectible-phones", s.scopedRoute(permissionPhonesRead, http.HandlerFunc(s.handleCollectiblePhonesAPI)))
 	mux.Handle("GET /api/collectible-phones/{id}", s.scopedRoute(permissionPhonesRead, http.HandlerFunc(s.handleCollectiblePhoneDetailAPI)))
+	mux.Handle("GET /api/nft-gifts", s.scopedRoute(permissionGiftsRead, http.HandlerFunc(s.handleNftGiftsAPI)))
 	mux.Handle("GET /api/account-ratings", s.scopedRoute(permissionRatingsRead, http.HandlerFunc(s.handleAccountRatingsAPI)))
 	mux.Handle("GET /api/account-ratings/{user_id}", s.scopedRoute(permissionRatingsRead, http.HandlerFunc(s.handleAccountRatingDetailAPI)))
 	mux.Handle("GET /api/stars/top", s.scopedRoute(permissionStarsRead, http.HandlerFunc(s.handleStarsTopAPI)))
@@ -2878,6 +2879,52 @@ func (s *server) handleCollectiblePhoneDetailAPI(w http.ResponseWriter, r *http.
 		suffix += "?" + r.URL.RawQuery
 	}
 	s.proxyAdminJSONNoStore(w, r, suffix, 2<<20)
+}
+
+// handleNftGiftsAPI lists minted collectible star gifts (the numbered, NFT-style
+// gift instances) -- the third tab of the panel's NFT Items section, alongside
+// usernames and +888 numbers. Same keyset paging shape as
+// handleCollectibleUsernamesAPI.
+func (s *server) handleNftGiftsAPI(w http.ResponseWriter, r *http.Request) {
+	if s.read == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "read store is not configured")
+		return
+	}
+	query := r.URL.Query()
+	giftID, err := parseInt64(query.Get("gift_id"))
+	if err != nil || giftID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid gift_id")
+		return
+	}
+	ownerUserID, err := parseInt64(query.Get("owner_user_id"))
+	if err != nil || ownerUserID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid owner_user_id")
+		return
+	}
+	beforeID, err := parseInt64(query.Get("before_id"))
+	if err != nil || beforeID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid before_id")
+		return
+	}
+	limit, err := parseInt(query.Get("limit"))
+	if err != nil || limit < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	rows, hasMore, err := s.read.ListUniqueStarGifts(r.Context(), giftID, ownerUserID, beforeID, query.Get("q"), limit)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	nextBeforeID := ""
+	if hasMore && len(rows) > 0 {
+		nextBeforeID = strconv.FormatInt(rows[len(rows)-1].ID, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rows":           rows,
+		"has_more":       hasMore,
+		"next_before_id": nextBeforeID,
+	})
 }
 
 // handleAccountRatingsAPI pages the leaderboard. next_before_id is the last
