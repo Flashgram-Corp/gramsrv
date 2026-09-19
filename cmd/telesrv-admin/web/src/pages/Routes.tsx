@@ -28,21 +28,25 @@ import { BotVerificationPage } from "./BotVerificationPage";
 import { BotVerificationRequestPage } from "./BotVerificationRequestPage";
 import { VerificationDetailPage } from "./VerificationDetailPage";
 import { VerificationPage } from "./VerificationPage";
+import { SharedDevicesPage } from "./SharedDevicesPage";
 import { StoragePage } from "./StoragePage";
 import { StickerSetsPage } from "./StickerSetsPage";
 import { StarsDetailPage } from "./StarsDetailPage";
 import { StarsPage } from "./StarsPage";
 import {
   PermissionGate,
+  permissionAccountsRead,
   permissionAdminsManage,
   permissionAuditRead,
   permissionBotVerificationReview,
   permissionPremiumManage,
+  permissionServerManage,
   permissionStarsRead,
   permissionVerificationReview
 } from "../permissions";
 import { AdminUsersPage } from "./AdminUsersPage";
 import { AuditLogPage } from "./AuditLogPage";
+import { ServerSettingsPage } from "./ServerSettingsPage";
 
 export function Routes({ route, navigate }: { route: RouteState; navigate: Navigate }) {
   const accountID = route.path.match(/^\/accounts\/(\d+)$/)?.[1];
@@ -101,6 +105,13 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
       </PermissionGate>
     );
   }
+  if (route.path === "/server-settings") {
+    return (
+      <PermissionGate permission={permissionServerManage}>
+        <ServerSettingsPage search={route.search} />
+      </PermissionGate>
+    );
+  }
   const starsUserID = route.path.match(/^\/stars\/(\d+)$/)?.[1];
   if (starsUserID) {
     return (
@@ -155,6 +166,13 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
   }
   if (route.path === "/accounts") {
     return <AccountsPage navigate={navigate} />;
+  }
+  if (route.path === "/accounts/shared-devices") {
+    return (
+      <PermissionGate permission={permissionAccountsRead}>
+        <SharedDevicesPage navigate={navigate} />
+      </PermissionGate>
+    );
   }
   if (route.path === "/channels") {
     return <ChannelsPage navigate={navigate} />;

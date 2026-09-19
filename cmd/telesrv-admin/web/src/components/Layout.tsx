@@ -13,8 +13,6 @@ import {
   Phone,
   BadgeDollarSign,
   Coins,
-  Server,
-  Shield,
   ShieldAlert,
   ShieldCheck,
   Smile,
@@ -25,22 +23,24 @@ import {
 	Gift,
 	Send,
 	KeyRound,
-	ScrollText
+	ScrollText,
+	Settings
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { LanguageSwitch, useI18n } from "../i18n";
-import { permissionAuditRead, permissionAdminsManage, permissionBotVerificationReview, permissionPremiumManage, permissionStarsRead, permissionVerificationReview, useCan } from "../permissions";
+import { permissionAuditRead, permissionAdminsManage, permissionBotVerificationReview, permissionPremiumManage, permissionServerManage, permissionStarsRead, permissionVerificationReview, useCan } from "../permissions";
 import { type Navigate, type RouteState, routeSubtitle, routeTitle } from "../routing";
 import { ThemeSwitch } from "../theme";
 import { AppLink } from "./AppLink";
+import { AppBackground } from "./AppBackground";
 
 export function BootScreen() {
   const { t } = useI18n();
   return (
     <div className="boot-screen">
       <div className="brand compact brand-elevated">
-        <span className="brand-mark">T</span>
+        <span className="brand-mark"><img src="/logo.png" alt="" /></span>
         <span>
           <strong>telesrv</strong>
           <small>{t("app.adminConsole")}</small>
@@ -78,6 +78,7 @@ export function Shell({
   // entries below are not even visible without the matching right.
   const canManageAdmins = useCan(permissionAdminsManage);
   const canReadAudit = useCan(permissionAuditRead);
+  const canManageServer = useCan(permissionServerManage);
   const canReadStars = useCan(permissionStarsRead);
   const messagesActive = route.path.startsWith("/messages");
   const [messagesOpen, setMessagesOpen] = useState(messagesActive);
@@ -97,7 +98,7 @@ export function Shell({
     <div className="shell">
       <aside className="sidebar">
         <AppLink className="brand" href="/" navigate={navigate}>
-          <span className="brand-mark">T</span>
+          <span className="brand-mark"><img src="/logo.png" alt="" /></span>
           <span>
             <strong>telesrv</strong>
             <small>{t("app.adminConsole")}</small>
@@ -142,6 +143,9 @@ export function Shell({
           {canReadAudit && (
             <NavLink icon={<ScrollText size={16} />} href="/audit-log" route={route} navigate={navigate}>{t("layout.auditLog")}</NavLink>
           )}
+          {canManageServer && (
+            <NavLink icon={<Settings size={16} />} href="/server-settings" route={route} navigate={navigate}>{t("layout.serverSettings")}</NavLink>
+          )}
           <div className={`nav-section ${messagesActive ? "active" : ""} ${messagesOpen ? "open" : ""}`}>
             <button
               className="nav-section-toggle"
@@ -175,12 +179,6 @@ export function Shell({
             )}
           </div>
         </nav>
-        <div className="sidebar-status">
-          <div className="sidebar-label">{t("layout.runtime")}</div>
-          <div className="runtime-row"><Server size={14} /><span>{t("layout.adminBackend")}</span><strong>{t("layout.ready")}</strong></div>
-          <div className="runtime-row"><Database size={14} /><span>{t("layout.pgRead")}</span><strong>{t("layout.readOnly")}</strong></div>
-          <div className="runtime-row"><Shield size={14} /><span>{t("layout.writeOps")}</span><strong>{t("layout.dryRun")}</strong></div>
-        </div>
       </aside>
       <div className="workspace">
         <header className="topbar">
@@ -199,6 +197,7 @@ export function Shell({
         </header>
         <main className="content">{children}</main>
       </div>
+      <AppBackground className="app-background--workspace" />
     </div>
   );
 }

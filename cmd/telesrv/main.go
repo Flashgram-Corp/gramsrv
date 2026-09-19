@@ -71,6 +71,7 @@ import (
 	"telesrv/internal/branding"
 	"telesrv/internal/config"
 	"telesrv/internal/domain"
+	"telesrv/internal/identity"
 	"telesrv/internal/mtprotoedge"
 	obsmetrics "telesrv/internal/observability/metrics"
 	"telesrv/internal/officialgifts"
@@ -579,6 +580,17 @@ func run(logger *zap.Logger) error {
 	}
 	if !domain.ConfigurePremiumBotUsername(cfg.PremiumBotUsername) {
 		return fmt.Errorf("configure Premium bot username %q", cfg.PremiumBotUsername)
+	}
+	// 服务器身份由管理面板（Server Settings → Server identity）在
+	// cfg.IdentityDir 下维护；启动时读取一次自定义服务器名，用作 777000 官方系统
+	// 账号的展示名与登录通知 {{server_name}} 占位符（见
+	// domain.SetOfficialSystemUserDisplayName）。每次登录/ping 实时读取 identity
+	// 的模板覆盖在 internal/app/auth 内部完成，这里只做启动时的一次性名称引导。
+	identityStore := identity.NewStore(cfg.IdentityDir)
+	if info, err := identityStore.Get(); err != nil {
+		logger.Warn("读取服务器身份失败，沿用品牌默认名", zap.Error(err))
+	} else {
+		domain.SetOfficialSystemUserDisplayName(info.Name)
 	}
 	buildMeta := currentBuildMetadata()
 
@@ -1418,6 +1430,8 @@ func run(logger *zap.Logger) error {
 	authService := auth.NewService(userStore, authzStore, codeStore, authKeyGetBatchStore, tempAuthKeyStore, cfg.DevAuthCode,
 		auth.WithLoginMessages(messageStore, dialogStore),
 		auth.WithLoginCodeDelivery(messageStore),
+		auth.WithLoginWelcomeMessages(identityStore, cfg.WelcomeMessagePhoneTemplate, cfg.WelcomeMessageEmailTemplate),
+		auth.WithLoginCodeMessageTemplate(identityStore, cfg.LoginCodeMessageTemplate),
 		auth.WithPasswords(passwordStore),
 		auth.WithBotLogin(botStore),
 		auth.WithPremiumGrant(cfg.PremiumGrantMonths),

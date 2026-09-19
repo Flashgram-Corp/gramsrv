@@ -1448,3 +1448,333 @@
   font-weight: 800;
   letter-spacing: -.02em;
 }
+
+.avatar-col { width: 44px; }
+
+.avatar-link {
+  display: block;
+  padding: 0;
+  line-height: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+/* --- Server Settings (cmd/telesrv-admin/serversettings.go) ------------ */
+
+/* The identity card's icon slot: the image/figure on the left with a little
+   "edit" button pinned to its corner, the two text fields filling the rest of
+   the section's width on the right, full-width Save button spanning the whole
+   section beneath. */
+.avatar-edit-slot {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.avatar-edit-btn {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--brand);
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.avatar-edit-btn:hover {
+  background: var(--brand-tint);
+  border-color: var(--brand);
+}
+
+.identity-card {
+  width: 100%;
+}
+
+.identity-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.identity-layout .server-identity-fields {
+  flex: 1 1 auto;
+  gap: 12px;
+}
+
+.identity-layout .form-field textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.identity-save-row .btn {
+  width: 100%;
+  justify-content: center;
+  min-height: 40px;
+}
+
+.server-icon-fallback {
+  color: var(--muted);
+  background: var(--panel-subtle);
+  border: 1px dashed var(--line-strong);
+}
+
+/* Login-notification template cards: lead paragraphs with the {{...}}
+   placeholders rendered as monospace chips, and a warning line under a
+   login-code template that would not actually carry the OTP. */
+.muted-lead {
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.muted-lead code {
+  padding: 1px 5px;
+  margin: 0 2px;
+  color: var(--code-text);
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: var(--radius-xs);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11.5px;
+}
+
+.code-lead {
+  margin-top: 1.5em;
+  padding-top: 1em;
+  border-top: 1px solid var(--line);
+}
+
+.field-warning {
+  display: block;
+  margin-top: 4px;
+  color: var(--danger-text);
+  font-size: 0.85em;
+}
+
+/* Section blocks carry scroll-anchor so a deep link ("?focus=...") doesn't
+   tuck the card's heading under the sticky topbar. */
+.scroll-anchor {
+  scroll-margin-top: 88px;
+}
+
+/* The .env editor: one collapsible group per `##` section of .env.example,
+   expanding to the editable fields (see internal/procctl/env.go). */
+.env-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.env-group {
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.env-group-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  background: var(--panel-subtle);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 140ms ease;
+}
+
+.env-group-toggle:hover {
+  background: var(--brand-tint);
+}
+
+.env-group-toggle-text {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.env-group-toggle-title {
+  color: var(--heading);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.env-group-toggle-count {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.env-group-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform 140ms ease;
+}
+
+.env-group.open .env-group-chevron {
+  transform: rotate(180deg);
+}
+
+.env-group-body {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.env-group-desc {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.env-field .env-field-desc {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.env-save-row {
+  margin-top: 12px;
+}
+
+/* Server Settings' Settings/Services tab bar. */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  width: fit-content;
+}
+
+.tab-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.tab-btn:hover {
+  color: var(--text);
+}
+
+.tab-btn.active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+/* Read-only status cards -- Services tab (Postgres / Redis / MTProto /
+   host reachability probes). */
+.service-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.service-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.service-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--text-soft);
+}
+
+.service-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.service-card-name {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+  text-transform: capitalize;
+}
+
+.service-card-detail {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  margin-top: 1px;
+}
+
+.service-card-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: capitalize;
+  padding: 4px 9px;
+  border-radius: 999px;
+}
+
+.service-card.tone-good .service-card-icon { color: var(--good); }
+.service-card.tone-good .service-card-status {
+  color: var(--good);
+  background: var(--good-tint);
+  border: 1px solid var(--good-border);
+}
+
+.service-card.tone-warn .service-card-icon { color: var(--warn); }
+.service-card.tone-warn .service-card-status {
+  color: var(--warn);
+  background: var(--warn-tint);
+  border: 1px solid var(--warn-border);
+}
+
+.service-card.tone-danger .service-card-icon { color: var(--danger); }
+.service-card.tone-danger .service-card-status {
+  color: var(--danger);
+  background: var(--danger-tint);
+  border: 1px solid var(--danger-border);
+}
+
+.service-card.tone-idle .service-card-status {
+  color: var(--muted);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+}
+
+.services-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

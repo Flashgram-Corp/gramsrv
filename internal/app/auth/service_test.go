@@ -800,11 +800,30 @@ func TestSignUpWritesOfficialLoginMessage(t *testing.T) {
 	if msg.ID == 0 || !strings.Contains(msg.Body, "Login code: 12345") {
 		t.Fatalf("login message = %+v, want returned official login code message", msg)
 	}
-	if len(list.Messages) != 1 || !strings.Contains(list.Messages[0].Body, "Login code: 12345") {
-		t.Fatalf("messages = %+v, want login code message", list.Messages)
+	// SignUp now also fires the unconditional welcome message (777000), so the
+	// official history holds both the bootstrap login-code message and the
+	// welcome notification.
+	peer := domain.Peer{Type: domain.PeerTypeUser, ID: domain.OfficialSystemUserID}
+	history, err := messages.ListByUser(ctx, u.ID, domain.MessageFilter{HasPeer: true, Peer: peer, Limit: 10})
+	if err != nil {
+		t.Fatalf("ListByUser messages: %v", err)
 	}
-	if list.Dialogs[0].TopMessage != list.Messages[0].ID || list.Dialogs[0].UnreadCount != 1 {
-		t.Fatalf("dialog top/unread = %+v, message = %+v", list.Dialogs[0], list.Messages[0])
+	if len(history.Messages) != 2 {
+		t.Fatalf("messages = %+v, want login code message + welcome message", history.Messages)
+	}
+	var loginMsg, welcomeMsg domain.Message
+	for _, m := range history.Messages {
+		if strings.Contains(m.Body, "Login code: 12345") {
+			loginMsg = m
+		} else {
+			welcomeMsg = m
+		}
+	}
+	if loginMsg.ID == 0 || welcomeMsg.ID == 0 {
+		t.Fatalf("messages = %+v, want one login code message and one welcome message", history.Messages)
+	}
+	if list.Dialogs[0].TopMessage != welcomeMsg.ID || list.Dialogs[0].UnreadCount != 2 {
+		t.Fatalf("dialog top/unread = %+v, message ids = %d/%d", list.Dialogs[0], loginMsg.ID, welcomeMsg.ID)
 	}
 }
 
@@ -825,15 +844,17 @@ func TestSendCodeLoginMessagePreservesOfficialDialogReadWatermark(t *testing.T) 
 		t.Fatalf("SendCode signup: %v", err)
 	}
 	verifyCodeForSignUp(t, svc, phone, hash, "12345")
-	u, first, err := svc.SignUp(ctx, domain.Authorization{}, phone, hash, "Test", "User")
+	u, _, err := svc.SignUp(ctx, domain.Authorization{}, phone, hash, "Test", "User")
 	if err != nil {
 		t.Fatalf("SignUp: %v", err)
 	}
 	peer := domain.Peer{Type: domain.PeerTypeUser, ID: domain.OfficialSystemUserID}
+	// SignUp fired a welcome message (ID 2) right after the login code (ID 1),
+	// so a full-dialog read now lands on the welcome message's ID.
 	if read, err := dialogs.MarkRead(ctx, u.ID, peer, domain.MaxMessageBoxID); err != nil {
 		t.Fatalf("MarkRead first login message: %v", err)
-	} else if read.MaxID != first.ID || read.StillUnreadCount != 0 {
-		t.Fatalf("read first login message = %+v, want max_id %d unread 0", read, first.ID)
+	} else if read.MaxID != 2 || read.StillUnreadCount != 0 {
+		t.Fatalf("read first login message = %+v, want max_id 2 unread 0", read)
 	}
 	assertOfficialDialog := func(wantTop, wantRead, wantUnread int) {
 		t.Helper()
@@ -872,9 +893,11 @@ func TestSendCodeLoginMessagePreservesOfficialDialogReadWatermark(t *testing.T) 
 	if err != nil {
 		t.Fatalf("SendCode signin second: %v", err)
 	}
-	second := latestLoginMessage(2)
+	// Official history after the second SendCode: login code (1), welcome (2),
+	// new login code (3).
+	second := latestLoginMessage(3)
 	// 核心时序：SendCode 返回时 message/dialog/unread 已提交，尚未 SignIn。
-	assertOfficialDialog(second.ID, first.ID, 1)
+	assertOfficialDialog(second.ID, 2, 1)
 	_, signInMessage, needSignUp, err := svc.SignIn(ctx, domain.Authorization{}, phone, hash, "12345")
 	if err != nil || needSignUp {
 		t.Fatalf("SignIn second needSignUp=%v err=%v", needSignUp, err)
@@ -882,14 +905,15 @@ func TestSendCodeLoginMessagePreservesOfficialDialogReadWatermark(t *testing.T) 
 	if signInMessage.ID != 0 {
 		t.Fatalf("SignIn second returned a late login message %+v", signInMessage)
 	}
-	assertOfficialDialog(second.ID, first.ID, 1)
+	// SignIn adds only the welcome notification (never a late login code).
+	assertOfficialDialog(latestLoginMessage(4).ID, 2, 2)
 
 	hash, err = svc.SendCode(ctx, phone)
 	if err != nil {
 		t.Fatalf("SendCode signin third: %v", err)
 	}
-	third := latestLoginMessage(3)
-	assertOfficialDialog(third.ID, first.ID, 2)
+	third := latestLoginMessage(5)
+	assertOfficialDialog(third.ID, 2, 3)
 	_, signInMessage, needSignUp, err = svc.SignIn(ctx, domain.Authorization{}, phone, hash, "12345")
 	if err != nil || needSignUp {
 		t.Fatalf("SignIn third needSignUp=%v err=%v", needSignUp, err)
@@ -897,7 +921,7 @@ func TestSendCodeLoginMessagePreservesOfficialDialogReadWatermark(t *testing.T) 
 	if signInMessage.ID != 0 {
 		t.Fatalf("SignIn third returned a late login message %+v", signInMessage)
 	}
-	assertOfficialDialog(third.ID, first.ID, 2)
+	assertOfficialDialog(latestLoginMessage(6).ID, 2, 4)
 }
 
 func TestSignInExistingTwoFactorAccountNeedsPassword(t *testing.T) {

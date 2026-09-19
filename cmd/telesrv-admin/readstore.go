@@ -280,6 +280,12 @@ func newReadStore(pool *pgxpool.Pool) *readStore {
 	return &readStore{pool: pool}
 }
 
+// Ping probes the Postgres pool, backing the Server Settings status page's
+// "database" component.
+func (r *readStore) Ping(ctx context.Context) error {
+	return r.pool.Ping(ctx)
+}
+
 // AccountUsername is one collectible (Fragment-style) username a peer holds.
 //
 // Active mirrors the username#b4073647 flag: an inactive collectible is still
@@ -371,6 +377,33 @@ type AuthorizationRow struct {
 	PasswordPending bool
 	CreatedAt       time.Time
 	ActiveAt        time.Time
+}
+
+// SharedDeviceAccount is one account whose authorizations matched a
+// SharedDeviceGroup's device fingerprint.
+type SharedDeviceAccount struct {
+	UserID    int64
+	Phone     string
+	Username  string
+	FirstName string
+	LastName  string
+	ActiveAt  time.Time
+}
+
+// SharedDeviceGroup is a device fingerprint (device_model + system_version +
+// platform + ip) shared by more than one distinct account's authorizations --
+// a heuristic multi-accounting signal, not proof: device_model/system_version
+// are client-reported and spoofable, and ip alone collides naturally behind
+// NAT, shared wifi, or carrier CGNAT. Treat this as a lead to investigate, not
+// a verdict.
+type SharedDeviceGroup struct {
+	DeviceModel   string
+	SystemVersion string
+	Platform      string
+	IP            string
+	AccountCount  int
+	LastActiveAt  time.Time
+	Accounts      []SharedDeviceAccount
 }
 
 type AuditLogRow struct {
@@ -942,6 +975,88 @@ LIMIT $3`, beforeActiveUS, beforeID, limit+1)
 		out = out[:limit]
 	}
 	return out, hasMore, nil
+}
+
+// ListSharedDeviceGroups pages through device fingerprints (device_model +
+// system_version + platform + ip) that more than one distinct account has
+// authorized from -- see SharedDeviceGroup's doc comment on why this is a
+// heuristic, not a verdict. Pagination is plain offset/limit over the
+// aggregated group list (not the raw authorizations table): the number of
+// *groups* is expected to stay small relative to total session count, so an
+// offset scan over the pre-aggregated CTE is cheap even though offset
+// pagination over raw rows elsewhere in this file deliberately uses a keyset
+// cursor instead.
+func (s *readStore) ListSharedDeviceGroups(ctx context.Context, offset, limit int) ([]SharedDeviceGroup, bool, error) {
+	if limit <= 0 {
+		limit = accountListDefaultLimit
+	}
+	if limit > accountListMaxLimit {
+		limit = accountListMaxLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.pool.Query(ctx, `
+WITH device_groups AS (
+	SELECT device_model, system_version, platform, ip,
+		count(DISTINCT user_id)::int AS account_count,
+		max(active_at) AS last_active_at
+	FROM authorizations
+	WHERE device_model <> ''
+	GROUP BY device_model, system_version, platform, ip
+	HAVING count(DISTINCT user_id) > 1
+	ORDER BY max(active_at) DESC, device_model, system_version, platform, ip
+	LIMIT $1 OFFSET $2
+),
+members AS (
+	SELECT DISTINCT ON (a.device_model, a.system_version, a.platform, a.ip, a.user_id)
+		a.device_model, a.system_version, a.platform, a.ip, a.user_id, a.active_at
+	FROM authorizations a
+	JOIN device_groups g ON a.device_model = g.device_model AND a.system_version = g.system_version
+		AND a.platform = g.platform AND a.ip = g.ip
+	ORDER BY a.device_model, a.system_version, a.platform, a.ip, a.user_id, a.active_at DESC
+)
+SELECT g.device_model, g.system_version, g.platform, g.ip, g.account_count, g.last_active_at,
+	m.user_id, m.active_at, u.phone, u.username, u.first_name, u.last_name
+FROM device_groups g
+JOIN members m ON m.device_model = g.device_model AND m.system_version = g.system_version
+	AND m.platform = g.platform AND m.ip = g.ip
+JOIN users u ON u.id = m.user_id
+ORDER BY g.last_active_at DESC, g.device_model, g.system_version, g.platform, g.ip, m.active_at DESC`,
+		limit+1, offset)
+	if err != nil {
+		return nil, false, fmt.Errorf("list shared device groups: %w", err)
+	}
+	defer rows.Close()
+
+	groups := make([]SharedDeviceGroup, 0, limit+1)
+	for rows.Next() {
+		var (
+			deviceModel, systemVersion, platform, ip string
+			accountCount                             int
+			lastActiveAt                             time.Time
+			acc                                      SharedDeviceAccount
+		)
+		if err := rows.Scan(&deviceModel, &systemVersion, &platform, &ip, &accountCount, &lastActiveAt,
+			&acc.UserID, &acc.ActiveAt, &acc.Phone, &acc.Username, &acc.FirstName, &acc.LastName); err != nil {
+			return nil, false, err
+		}
+		if len(groups) == 0 {
+			groups = append(groups, SharedDeviceGroup{DeviceModel: deviceModel, SystemVersion: systemVersion, Platform: platform, IP: ip, AccountCount: accountCount, LastActiveAt: lastActiveAt})
+		} else if last := &groups[len(groups)-1]; last.DeviceModel != deviceModel || last.SystemVersion != systemVersion || last.Platform != platform || last.IP != ip {
+			groups = append(groups, SharedDeviceGroup{DeviceModel: deviceModel, SystemVersion: systemVersion, Platform: platform, IP: ip, AccountCount: accountCount, LastActiveAt: lastActiveAt})
+		}
+		last := &groups[len(groups)-1]
+		last.Accounts = append(last.Accounts, acc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(groups) > limit
+	if hasMore {
+		groups = groups[:limit]
+	}
+	return groups, hasMore, nil
 }
 
 func (s *readStore) AccountDetail(ctx context.Context, userID int64) (AccountDetail, error) {

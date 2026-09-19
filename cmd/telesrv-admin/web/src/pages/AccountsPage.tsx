@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Loader2, RefreshCw, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, RefreshCw, Search, Smartphone } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, errorMessage } from "../api";
 import { Alert, Badge, EmptyRow, Metric, PageFrame, QueryPanel, UsernameCell } from "../components/ui";
@@ -78,9 +78,14 @@ export function AccountsPage({ navigate }: { navigate: Navigate }) {
       title={t("account.pageTitle")}
       eyebrow={data?.listing === false ? t("account.queryResults") : t("account.recentActive")}
       actions={
-        <button className="btn" type="button" onClick={() => loadPage(cursor)} disabled={busy}>
-          <RefreshCw size={15} /> {t("common.refresh")}
-        </button>
+        <>
+          <button className="btn icon-text" type="button" onClick={() => navigate("/accounts/shared-devices")}>
+            <Smartphone size={15} /> {t("account.sharedDevices")}
+          </button>
+          <button className="btn" type="button" onClick={() => loadPage(cursor)} disabled={busy}>
+            <RefreshCw size={15} /> {t("common.refresh")}
+          </button>
+        </>
       }
     >
       {error && <Alert>{error}</Alert>}

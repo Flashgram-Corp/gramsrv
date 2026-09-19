@@ -181,6 +181,17 @@ type Config struct {
 
 	// DevAuthCode 是开发固定验证码；生产短信/风控不在当前范围内。
 	DevAuthCode string
+	// WelcomeMessagePhoneTemplate/WelcomeMessageEmailTemplate 是 777000 登录成功后的
+	// 欢迎消息（每次手机号/邮箱登录完成即发送）的回退模板——仅在管理面板未在
+	// internal/identity.Store 设置覆盖时生效（见 domain.ResolveWelcomeMessageTemplate）。
+	// 支持 {{server_name}} 占位符；默认取 domain.DefaultWelcomeMessage{Phone,Email}Template。
+	WelcomeMessagePhoneTemplate string
+	WelcomeMessageEmailTemplate string
+	// LoginCodeMessageTemplate 是 777000 登录码投递消息的回退模板（登录码不分渠道，
+	// 只有一份，见 domain.ResolveLoginCodeMessageTemplate），仅在管理面板未在
+	// internal/identity.Store 设置覆盖时生效。支持 {{server_name}}，且要求 {{code}}
+	// 占位符恰好出现一次；默认取 domain.DefaultLoginCodeMessageTemplate。
+	LoginCodeMessageTemplate string
 	// AuthCodeTTL 是登录/注册/邮箱验证 code 的有效期。
 	AuthCodeTTL time.Duration
 	// PhoneCodeLength 是使用外部 provider 时生成的短信验证码长度。development
@@ -279,6 +290,10 @@ type Config struct {
 	// PremiumPromoSeedDir 是 help.getPremiumPromo 视频与缩略图导出目录。
 	// 目录缺失时保留无视频兼容响应；目录存在但内容非法时启动失败。
 	PremiumPromoSeedDir string
+	// IdentityDir 存放管理员可编辑的服务器身份（identity.json 中的名称/简介、icon.<ext>
+	// 图标）——见 internal/identity。由 cmd/telesrv-admin 的面板写入、cmd/telesrv 每次
+	// 使用前实时读取，编辑即时生效、无需重启服务器。
+	IdentityDir string
 	// BusinessAIProvider 控制服务端 Business automation 回复生成器。
 	// 空值/"echo" 回显触发私聊文本，用于跑通后续 AI provider 链路；
 	// "template" 使用 quick reply 模板。
@@ -894,6 +909,9 @@ func Load() (Config, error) {
 		RedisDB:          envIntOr("TELESRV_REDIS_DB", 0),
 
 		DevAuthCode:                       envOr("TELESRV_DEV_AUTH_CODE", "12345"),
+		WelcomeMessagePhoneTemplate:       envOr("TELESRV_WELCOME_MESSAGE_PHONE_TEMPLATE", domain.DefaultWelcomeMessagePhoneTemplate),
+		WelcomeMessageEmailTemplate:       envOr("TELESRV_WELCOME_MESSAGE_EMAIL_TEMPLATE", domain.DefaultWelcomeMessageEmailTemplate),
+		LoginCodeMessageTemplate:          envOr("TELESRV_LOGIN_CODE_MESSAGE_TEMPLATE", domain.DefaultLoginCodeMessageTemplate),
 		AuthCodeTTL:                       envDurationOr("TELESRV_AUTH_CODE_TTL", 5*time.Minute),
 		PhoneCodeLength:                   envIntOr("TELESRV_PHONE_CODE_LENGTH", 5),
 		AuthCodeMaxAttempts:               envIntOr("TELESRV_AUTH_CODE_MAX_ATTEMPTS", 5),
@@ -938,6 +956,7 @@ func Load() (Config, error) {
 		GifSeedDir:                        envOr("TELESRV_GIF_SEED_DIR", "data/gifs"),
 		StickerSeedMaxSets:                envIntOr("TELESRV_STICKER_SEED_MAX_SETS", 300),
 		PremiumPromoSeedDir:               envOr("TELESRV_PREMIUM_PROMO_SEED_DIR", "data/premium-promo"),
+		IdentityDir:                       envOr("TELESRV_IDENTITY_DIR", "data/identity"),
 		MapboxToken:                       envOr("TELESRV_MAPBOX_TOKEN", ""),
 		MapTileCacheDir:                   envOr("TELESRV_MAPTILE_CACHE_DIR", "data/maptiles"),
 		ExternalMediaEnable:               envBoolOr("TELESRV_EXTERNAL_MEDIA_ENABLE", true),
