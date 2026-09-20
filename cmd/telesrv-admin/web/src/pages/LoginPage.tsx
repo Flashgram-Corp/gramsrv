@@ -2,6 +2,7 @@ import type { FormEvent } from "react";
 import { useState } from "react";
 import { api, errorMessage } from "../api";
 import { Alert } from "../components/ui";
+import { AppBackground } from "../components/AppBackground";
 import { LanguageSwitch, useI18n } from "../i18n";
 import { ThemeSwitch } from "../theme";
 import type { AdminSession } from "../types";
@@ -31,10 +32,11 @@ export function LoginPage({ onLogin }: { onLogin: (session: AdminSession) => voi
 
   return (
     <main className="login-page">
+      <AppBackground />
       <section className="login-panel">
         <div className="login-head">
           <div className="brand brand-elevated">
-            <span className="brand-mark">T</span>
+            <span className="brand-mark"><img src="/logo.png" alt="" /></span>
             <span>
               <strong>telesrv</strong>
               <small>{t("app.adminConsole")}</small>

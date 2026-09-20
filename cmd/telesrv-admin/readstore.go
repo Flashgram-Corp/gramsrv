@@ -280,6 +280,12 @@ func newReadStore(pool *pgxpool.Pool) *readStore {
 	return &readStore{pool: pool}
 }
 
+// Ping probes the Postgres pool, backing the Server Settings status page's
+// "database" component.
+func (r *readStore) Ping(ctx context.Context) error {
+	return r.pool.Ping(ctx)
+}
+
 // AccountUsername is one collectible (Fragment-style) username a peer holds.
 //
 // Active mirrors the username#b4073647 flag: an inactive collectible is still
@@ -371,6 +377,33 @@ type AuthorizationRow struct {
 	PasswordPending bool
 	CreatedAt       time.Time
 	ActiveAt        time.Time
+}
+
+// SharedDeviceAccount is one account whose authorizations matched a
+// SharedDeviceGroup's device fingerprint.
+type SharedDeviceAccount struct {
+	UserID    int64
+	Phone     string
+	Username  string
+	FirstName string
+	LastName  string
+	ActiveAt  time.Time
+}
+
+// SharedDeviceGroup is a device fingerprint (device_model + system_version +
+// platform + ip) shared by more than one distinct account's authorizations --
+// a heuristic multi-accounting signal, not proof: device_model/system_version
+// are client-reported and spoofable, and ip alone collides naturally behind
+// NAT, shared wifi, or carrier CGNAT. Treat this as a lead to investigate, not
+// a verdict.
+type SharedDeviceGroup struct {
+	DeviceModel   string
+	SystemVersion string
+	Platform      string
+	IP            string
+	AccountCount  int
+	LastActiveAt  time.Time
+	Accounts      []SharedDeviceAccount
 }
 
 type AuditLogRow struct {
@@ -942,6 +975,88 @@ LIMIT $3`, beforeActiveUS, beforeID, limit+1)
 		out = out[:limit]
 	}
 	return out, hasMore, nil
+}
+
+// ListSharedDeviceGroups pages through device fingerprints (device_model +
+// system_version + platform + ip) that more than one distinct account has
+// authorized from -- see SharedDeviceGroup's doc comment on why this is a
+// heuristic, not a verdict. Pagination is plain offset/limit over the
+// aggregated group list (not the raw authorizations table): the number of
+// *groups* is expected to stay small relative to total session count, so an
+// offset scan over the pre-aggregated CTE is cheap even though offset
+// pagination over raw rows elsewhere in this file deliberately uses a keyset
+// cursor instead.
+func (s *readStore) ListSharedDeviceGroups(ctx context.Context, offset, limit int) ([]SharedDeviceGroup, bool, error) {
+	if limit <= 0 {
+		limit = accountListDefaultLimit
+	}
+	if limit > accountListMaxLimit {
+		limit = accountListMaxLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.pool.Query(ctx, `
+WITH device_groups AS (
+	SELECT device_model, system_version, platform, ip,
+		count(DISTINCT user_id)::int AS account_count,
+		max(active_at) AS last_active_at
+	FROM authorizations
+	WHERE device_model <> ''
+	GROUP BY device_model, system_version, platform, ip
+	HAVING count(DISTINCT user_id) > 1
+	ORDER BY max(active_at) DESC, device_model, system_version, platform, ip
+	LIMIT $1 OFFSET $2
+),
+members AS (
+	SELECT DISTINCT ON (a.device_model, a.system_version, a.platform, a.ip, a.user_id)
+		a.device_model, a.system_version, a.platform, a.ip, a.user_id, a.active_at
+	FROM authorizations a
+	JOIN device_groups g ON a.device_model = g.device_model AND a.system_version = g.system_version
+		AND a.platform = g.platform AND a.ip = g.ip
+	ORDER BY a.device_model, a.system_version, a.platform, a.ip, a.user_id, a.active_at DESC
+)
+SELECT g.device_model, g.system_version, g.platform, g.ip, g.account_count, g.last_active_at,
+	m.user_id, m.active_at, u.phone, u.username, u.first_name, u.last_name
+FROM device_groups g
+JOIN members m ON m.device_model = g.device_model AND m.system_version = g.system_version
+	AND m.platform = g.platform AND m.ip = g.ip
+JOIN users u ON u.id = m.user_id
+ORDER BY g.last_active_at DESC, g.device_model, g.system_version, g.platform, g.ip, m.active_at DESC`,
+		limit+1, offset)
+	if err != nil {
+		return nil, false, fmt.Errorf("list shared device groups: %w", err)
+	}
+	defer rows.Close()
+
+	groups := make([]SharedDeviceGroup, 0, limit+1)
+	for rows.Next() {
+		var (
+			deviceModel, systemVersion, platform, ip string
+			accountCount                             int
+			lastActiveAt                             time.Time
+			acc                                      SharedDeviceAccount
+		)
+		if err := rows.Scan(&deviceModel, &systemVersion, &platform, &ip, &accountCount, &lastActiveAt,
+			&acc.UserID, &acc.ActiveAt, &acc.Phone, &acc.Username, &acc.FirstName, &acc.LastName); err != nil {
+			return nil, false, err
+		}
+		if len(groups) == 0 {
+			groups = append(groups, SharedDeviceGroup{DeviceModel: deviceModel, SystemVersion: systemVersion, Platform: platform, IP: ip, AccountCount: accountCount, LastActiveAt: lastActiveAt})
+		} else if last := &groups[len(groups)-1]; last.DeviceModel != deviceModel || last.SystemVersion != systemVersion || last.Platform != platform || last.IP != ip {
+			groups = append(groups, SharedDeviceGroup{DeviceModel: deviceModel, SystemVersion: systemVersion, Platform: platform, IP: ip, AccountCount: accountCount, LastActiveAt: lastActiveAt})
+		}
+		last := &groups[len(groups)-1]
+		last.Accounts = append(last.Accounts, acc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(groups) > limit
+	if hasMore {
+		groups = groups[:limit]
+	}
+	return groups, hasMore, nil
 }
 
 func (s *readStore) AccountDetail(ctx context.Context, userID int64) (AccountDetail, error) {
@@ -1689,6 +1804,91 @@ WHERE cu.id = $1`, id).Scan(collectibleUsernameScanDest(&out.Asset)...)
 		return out, err
 	}
 	return out, nil
+}
+
+// UniqueStarGiftRow is one minted collectible star gift (the NFT-style,
+// numbered gift instance a saved gift turns into after an upgrade) with its
+// holder resolved for display. The panel's "NFT Gifts" tab lists these, NOT
+// the catalog definitions: an operator here is looking at what accounts
+// actually hold, not at what can be bought.
+type UniqueStarGiftRow struct {
+	ID                  int64 `json:"ID,string"`
+	GiftID              int64 `json:"GiftID,string"`
+	Title               string
+	Slug                string
+	Num                 int
+	OwnerPeerType       string
+	OwnerPeerID         int64 `json:"OwnerPeerID,string"`
+	OwnerUsername       string
+	OwnerName           string
+	Burned              bool
+	Crafted             bool
+	KeepOriginalDetails bool
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
+const uniqueStarGiftSelectColumns = `u.id, u.gift_id,
+	COALESCE(NULLIF(u.title, ''), NULLIF(r.title, ''), '') AS title,
+	u.slug, u.num, u.owner_peer_type, u.owner_peer_id,
+	COALESCE(NULLIF(ou.username, ''), NULLIF(oc.username, ''), '') AS owner_username,
+	COALESCE(NULLIF(ou.first_name, ''), NULLIF(oc.title, ''), '') AS owner_name,
+	u.burned, u.crafted, u.keep_original_details, u.created_at, u.updated_at`
+
+const uniqueStarGiftJoins = `
+FROM unique_star_gifts u
+LEFT JOIN star_gift_catalog c ON c.gift_id = u.gift_id
+LEFT JOIN star_gift_catalog_revisions r ON r.id = c.active_revision_id
+LEFT JOIN users ou ON u.owner_peer_type = 'user' AND ou.id = u.owner_peer_id
+LEFT JOIN channels oc ON u.owner_peer_type = 'channel' AND oc.id = u.owner_peer_id`
+
+func uniqueStarGiftScanDest(item *UniqueStarGiftRow) []any {
+	return []any{
+		&item.ID, &item.GiftID, &item.Title, &item.Slug, &item.Num,
+		&item.OwnerPeerType, &item.OwnerPeerID, &item.OwnerUsername, &item.OwnerName,
+		&item.Burned, &item.Crafted, &item.KeepOriginalDetails, &item.CreatedAt, &item.UpdatedAt,
+	}
+}
+
+// ListUniqueStarGifts pages over minted gift instances newest first, keyset by
+// descending id. giftID/ownerUserID/q are optional filters; q matches a slug
+// prefix or a title substring, which is how an operator looks a gift up.
+func (s *readStore) ListUniqueStarGifts(ctx context.Context, giftID, ownerUserID, beforeID int64, q string, limit int) ([]UniqueStarGiftRow, bool, error) {
+	if limit <= 0 {
+		limit = collectibleListDefaultLimit
+	}
+	if limit > collectibleListMaxLimit {
+		limit = collectibleListMaxLimit
+	}
+	query := escapeLikePattern(strings.ToLower(strings.TrimSpace(q)))
+	rows, err := s.pool.Query(ctx, `
+SELECT `+uniqueStarGiftSelectColumns+uniqueStarGiftJoins+`
+WHERE ($1::bigint = 0 OR u.gift_id = $1)
+	AND ($2::bigint = 0 OR (u.owner_peer_type = 'user' AND u.owner_peer_id = $2))
+	AND ($3 = '' OR lower(u.slug) LIKE $3 || '%' OR lower(COALESCE(NULLIF(u.title, ''), r.title, '')) LIKE '%' || $3 || '%')
+	AND ($4::bigint = 0 OR u.id < $4)
+ORDER BY u.id DESC
+LIMIT $5`, giftID, ownerUserID, query, beforeID, limit+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("list unique star gifts: %w", err)
+	}
+	defer rows.Close()
+	out := make([]UniqueStarGiftRow, 0, limit+1)
+	for rows.Next() {
+		var item UniqueStarGiftRow
+		if err := rows.Scan(uniqueStarGiftScanDest(&item)...); err != nil {
+			return nil, false, err
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 func (s *readStore) collectibleUsernameTransfers(ctx context.Context, collectibleID int64) ([]CollectibleUsernameTransferRow, error) {

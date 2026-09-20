@@ -91,11 +91,11 @@ func (r *Router) onPaymentsUpgradeStarGift(ctx context.Context, req *tg.Payments
 			return nil, starGiftInvalidErr()
 		}
 	} else {
-		if _, err := r.starGiftUpgradePreviewForSaved(ctx, saved); err != nil {
-			return nil, err
-		}
 		if saved.PrepaidUpgradeStars <= 0 {
 			return nil, starGiftInvalidErr()
+		}
+		if _, err := r.starGiftUpgradePreviewForSaved(ctx, saved); err != nil {
+			return nil, err
 		}
 	}
 	result, err := r.deps.Gifts.Upgrade(ctx, domain.StarGiftUpgradeRequest{

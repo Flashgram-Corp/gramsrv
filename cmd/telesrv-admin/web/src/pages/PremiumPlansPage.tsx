@@ -15,8 +15,10 @@ import { createPortal } from "react-dom";
 import { api, errorMessage } from "../api";
 import { ActionButton } from "../components/ActionButton";
 import { UserPicker } from "../components/EntityPicker";
+import { SectionTabs, grantsTabs } from "../components/SectionTabs";
 import { Alert, Badge, EmptyRow, PageFrame, SectionHead } from "../components/ui";
 import { useI18n } from "../i18n";
+import type { Navigate } from "../routing";
 import type { AccountRow, PremiumPlan } from "../types";
 
 function newPlan(label: string): PremiumPlan {
@@ -50,7 +52,7 @@ function validPlan(plan: PremiumPlan): boolean {
     Number.isInteger(plan.SortOrder) && plan.Label.trim().length > 0;
 }
 
-export function PremiumPlansPage() {
+export function PremiumPlansPage({ navigate }: { navigate: Navigate }) {
   const { t } = useI18n();
   const [plans, setPlans] = useState<PremiumPlan[]>([]);
   const [draft, setDraft] = useState<PremiumPlan | null>(null);
@@ -181,6 +183,7 @@ export function PremiumPlansPage() {
         <RefreshCw size={15} /> {t("common.refresh")}
       </button>
     }>
+      <SectionTabs tabs={grantsTabs} active="/monetization" navigate={navigate} />
       <section className="surface premium-operations-compact">
         <SectionHead title={t("premium.operations")} text={t("premium.operationsHint")} />
         <div className="premium-operation-bar">

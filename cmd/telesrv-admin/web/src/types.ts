@@ -52,6 +52,39 @@ export type AuthorizationRow = {
   ActiveAt: string;
 };
 
+// SharedDeviceAccount is one account whose authorizations matched a
+// SharedDeviceGroup's device fingerprint.
+export type SharedDeviceAccount = {
+  UserID: number;
+  Phone: string;
+  Username: string;
+  FirstName: string;
+  LastName: string;
+  ActiveAt: string;
+};
+
+// SharedDeviceGroup is a device fingerprint (device model + OS + platform +
+// IP) shared by more than one distinct account -- a heuristic multi-account
+// signal, not proof (device_model/system_version are client-reported and
+// spoofable, and IP alone collides behind NAT/shared wifi/carrier CGNAT).
+export type SharedDeviceGroup = {
+  DeviceModel: string;
+  SystemVersion: string;
+  Platform: string;
+  IP: string;
+  AccountCount: number;
+  LastActiveAt: string;
+  Accounts: SharedDeviceAccount[];
+};
+
+export type SharedDeviceGroupListResponse = {
+  limit: number;
+  offset: number;
+  rows: SharedDeviceGroup[];
+  has_more: boolean;
+  next_offset: number;
+};
+
 export type AuditLogRow = {
   ID: number;
   CommandID: string;
@@ -376,6 +409,26 @@ export type ModerationCaseDetail = {
   Appeals: ModerationAppeal[];
 };
 
+// One evidence reference plus its frozen snapshot. EvidenceSchemaVersion marks
+// the shape of Evidence; the admin console only ever displays it, never repairs
+// it, so Evidence stays `unknown` here.
+export type ModerationReportItem = {
+  Kind: string;
+  Peer: ModerationPeer;
+  ItemID: number;
+  SecondaryID: number;
+  AuthorUserID: number;
+  EvidenceSchemaVersion: number;
+  Evidence: unknown;
+  EvidenceHash: string;
+};
+
+export type ModerationMediaHold = {
+  ItemIndex: number;
+  Kind: string;
+  StorageKey: string;
+};
+
 export type ModerationReport = {
   ID: number;
   ReporterUserID: number;
@@ -384,8 +437,8 @@ export type ModerationReport = {
   Reason: string;
   Option: string;
   Comment: string;
-  Items: Array<Record<string, unknown>>;
-  MediaHolds: Array<Record<string, unknown>>;
+  Items: ModerationReportItem[];
+  MediaHolds: ModerationMediaHold[];
   CreatedAt: string;
 };
 
@@ -483,6 +536,31 @@ export type CollectibleUsernameListResponse = {
 export type CollectibleUsernameDetail = {
   asset: CollectibleUsernameRow;
   transfers: CollectibleUsernameTransferRow[] | null;
+};
+
+// One minted collectible star gift (an NFT-style, numbered gift instance) as the
+// NFT Items -> NFT Gifts tab lists it. int64 columns arrive as JSON strings.
+export type UniqueStarGiftRow = {
+  ID: string;
+  GiftID: string;
+  Title: string;
+  Slug: string;
+  Num: number;
+  OwnerPeerType: CollectiblePeerType;
+  OwnerPeerID: string;
+  OwnerUsername: string;
+  OwnerName: string;
+  Burned: boolean;
+  Crafted: boolean;
+  KeepOriginalDetails: boolean;
+  CreatedAt: string;
+  UpdatedAt: string;
+};
+
+export type UniqueStarGiftListResponse = {
+  rows: UniqueStarGiftRow[] | null;
+  has_more: boolean;
+  next_before_id: string;
 };
 
 export type CollectiblePhoneTier = "standard" | "exclusive";
@@ -1067,4 +1145,71 @@ export type GroupMessageListResponse = {
   before_id: number;
   limit: number;
   rows: GroupMessageRow[];
+};
+
+// Server Settings (cmd/telesrv-admin/serversettings.go):
+// identity + login-notification template overrides, .env groups, and the
+// read-only status probes. The optional fields come back omitted when the
+// override is unset (json:"...,omitempty"), so they are undefined rather than
+// "" in that case.
+export type ServerIdentity = {
+  name: string;
+  description: string;
+  icon_ext?: string;
+  welcome_message_phone_template?: string;
+  welcome_message_email_template?: string;
+  login_code_message_template?: string;
+  default_welcome_message_phone_template: string;
+  default_welcome_message_email_template: string;
+  default_login_code_message_template: string;
+};
+
+export type EnvField = {
+  key: string;
+  default_value: string;
+  description: string;
+  enabled_by_default: boolean;
+  sensitive: boolean;
+  value: string;
+};
+
+export type EnvGroup = {
+  title: string;
+  description: string;
+  fields: EnvField[];
+};
+
+export type ServiceHealth = {
+  configured: boolean;
+  ok: boolean;
+  error?: string;
+};
+
+export type DockerService = {
+  name: string;
+  state: string;
+  health: string;
+};
+
+// The Services tab's best-effort Compose view. `available: false` is a normal
+// state (the admin console runs without a Docker socket); `error` explains why.
+export type ServerDockerStatus = {
+  available: boolean;
+  error?: string;
+  compose?: string;
+  services: DockerService[] | null;
+};
+
+export type ServerStatus = {
+  host: {
+    hostname: string;
+    distro: string;
+    os: string;
+    arch: string;
+    go_version: string;
+  };
+  postgres: ServiceHealth;
+  redis: ServiceHealth;
+  mtproto: ServiceHealth;
+  docker: ServerDockerStatus;
 };

@@ -49,6 +49,13 @@ export const permissionRatingsRead = "ratings.read";
 export const permissionRatingsManage = "ratings.manage";
 export const permissionStarsRead = "stars.read";
 export const permissionDashboardRead = "dashboard.read";
+// The Server Settings console section (identity, login-notification templates,
+// .env editing, service status). One right for the whole surface rather than
+// split read/manage pairs: it only ever edits this machine's own config files,
+// so there is nothing to hand an operator read-only that they can't also see in
+// the repo/code, and the actions are deliberately small and audited by reason.
+// It is not implied by anything else, like the console-self rights below.
+export const permissionServerManage = "server.manage";
 
 // GET /api/session is read once at boot; the panel keeps the answer here so a
 // section the session may not use is hidden instead of rendered into a 403. This
@@ -154,6 +161,7 @@ const permissionLabels: Record<string, { title: string; hint: string }> = {
   "botverification.manage": { title: "Appoint verifiers", hint: "Grant verifier status and curate mark icons" },
   "admins.manage": { title: "Manage operators", hint: "Create operators and decide what everyone can do" },
   "audit.read": { title: "View the audit log", hint: "See who did what across the console" },
+  "server.manage": { title: "Manage server settings", hint: "Edit the server identity, login-notification templates and .env, and view service status" },
   "*": { title: "Full access", hint: "Every right, including future ones" }
 };
 
@@ -215,7 +223,7 @@ export const permissionGroups: { title: string; hint: string; permissions: strin
   {
     title: "The console itself",
     hint: "The rights that can hand out every other right or review the trail",
-    permissions: ["admins.manage", "audit.read"]
+    permissions: ["admins.manage", "audit.read", "server.manage"]
   }
 ];
 

@@ -10,7 +10,7 @@ func TestServiceIdentityAndLoginMessageUseTelesrvBrand(t *testing.T) {
 	if serviceUser.FirstName != "Telesrv" || serviceUser.Username != "telesrv" {
 		t.Fatalf("service user = %+v, want Telesrv identity", serviceUser)
 	}
-	message, err := OfficialLoginCodeMessage(42, "12345", 1)
+	message, err := OfficialLoginCodeMessage(42, "", "12345", 1)
 	if err != nil {
 		t.Fatalf("build login message: %v", err)
 	}

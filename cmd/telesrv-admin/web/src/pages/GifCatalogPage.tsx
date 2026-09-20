@@ -3,8 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, errorMessage } from "../api";
 import { ActionButton } from "../components/ActionButton";
+import { SectionTabs, mediaTabs } from "../components/SectionTabs";
 import { Alert, Badge, EmptyRow, Metric, PageFrame } from "../components/ui";
 import { useI18n } from "../i18n";
+import type { Navigate } from "../routing";
 import type { GifCatalogRow } from "../types";
 
 function GifPreview({ documentID }: { documentID: string }) {
@@ -13,7 +15,7 @@ function GifPreview({ documentID }: { documentID: string }) {
   return <video className="gif-catalog-thumb" src={api.gifCatalogDocumentPreviewURL(documentID)} muted loop autoPlay playsInline onError={() => setBroken(true)} />;
 }
 
-export function GifCatalogPage() {
+export function GifCatalogPage({ navigate }: { navigate: Navigate }) {
   const { t } = useI18n();
   const [rows, setRows] = useState<GifCatalogRow[]>([]);
   const [busy, setBusy] = useState(false);
@@ -33,6 +35,7 @@ export function GifCatalogPage() {
   return (
     <PageFrame title={t("gifCatalog.title")} eyebrow={t("gifCatalog.eyebrow")}
       actions={<><button className="btn" type="button" disabled={busy} onClick={() => void load()}><RefreshCw size={15} />{t("common.refresh")}</button><button className="btn primary" type="button" onClick={() => setCreateOpen(true)}><Plus size={15} />{t("gifCatalog.add")}</button></>}>
+      <SectionTabs tabs={mediaTabs} active="/gif-catalog" navigate={navigate} />
       {error && <Alert>{error}</Alert>}
       <div className="metric-row"><Metric label={t("gifCatalog.entries")} value={`${rows.length} / 50`} /><Metric label={t("common.enabled")} value={String(enabled)} tone="good" /></div>
       <div className="table-wrap">
