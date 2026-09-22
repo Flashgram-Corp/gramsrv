@@ -52,6 +52,11 @@ func TestBotAvatarsSeedViaRealService(t *testing.T) {
 	if err := botavatars.Seed(ctx, svc, 1750000000); err != nil {
 		t.Fatalf("botavatars.Seed failed: %v", err)
 	}
+	// The official system account is seeded separately from Seed (its avatar
+	// follows Server identity), so seed it here too with the bundled default.
+	if _, err := botavatars.SeedOfficialSystemAvatar(ctx, svc, nil, 1750000000); err != nil {
+		t.Fatalf("botavatars.SeedOfficialSystemAvatar failed: %v", err)
+	}
 
 	// premiumbot.mp4 走 CreateAvatarVideoFromBytes -> SaveFilePart -> PutUploadPart。
 	// uploadParts 必须被 SeedTx 保留，且确实落到了独立的 staging backend。
@@ -103,7 +108,9 @@ func TestBotAvatarsSeedViaRealService(t *testing.T) {
 		}
 	}
 
-	// 幂等：二次 seed 不报错，且不再生成新照片。
+	// 幂等：二次 Seed 不报错，且不再生成新照片。（官方系统账号的头像由
+	// SeedOfficialSystemAvatar 单独播种，每次调用都会重设，故不参与这里的
+	// 幂等断言。）
 	before := len(media.photos)
 	if err := botavatars.Seed(ctx, svc, 1750000001); err != nil {
 		t.Fatalf("second botavatars.Seed failed: %v", err)

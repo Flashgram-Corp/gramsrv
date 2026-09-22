@@ -100,6 +100,14 @@ const (
 	permissionStarsRead     = "stars.read"
 	permissionDashboardRead = "dashboard.read"
 
+	// permissionServerManage gates the whole Server Settings surface: reading
+	// and editing the server identity (name/description/icon), the 777000
+	// login-notification templates, the .env file, and the status page. One
+	// right rather than a read/manage pair because the section is small and
+	// every screen mixes read and write -- splitting them would just be two
+	// buttons the operator has to tick to get one section working.
+	permissionServerManage = "server.manage"
+
 	// permissionSessionOnly marks the handful of routes that need a session but
 	// no right: reading who you are, and signing out. It is not a grantable
 	// name -- scopedRoute treats it as "authenticated is enough" -- so it can
@@ -149,6 +157,7 @@ func assignablePermissions() []string {
 		permissionBotVerificationManage,
 		permissionAuditRead,
 		permissionAdminsManage,
+		permissionServerManage,
 	}
 }
 
@@ -240,6 +249,7 @@ func (s *server) requireAuthAPI(next http.Handler) http.Handler {
 		}
 		ctx := context.WithValue(r.Context(), actorKey{}, claims.Actor)
 		ctx = context.WithValue(ctx, permissionsKey{}, permissions)
+		ctx = context.WithValue(ctx, operatorIDKey{}, claims.UserID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

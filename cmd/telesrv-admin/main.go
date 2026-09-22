@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -87,6 +89,41 @@ type uiConfig struct {
 	// entry, so introducing the permission model never locks an operator out of a
 	// panel that worked before.
 	Permissions []string
+	// IdentityDir mirrors config.IdentityDir -- must point at the same
+	// directory the telesrv server reads, so an identity edit here is visible
+	// to the running server immediately (see internal/identity). The name the
+	// server boots with is read once at startup, so a rename here shows up on
+	// the next telesrv restart.
+	IdentityDir string
+	// WelcomeMessagePhoneDefault/WelcomeMessageEmailDefault mirror
+	// config.WelcomeMessage{Phone,Email}Template -- the env-var-resolved text
+	// telesrv falls back to whenever the identity panel override is unset.
+	// Surfaced as "effective default" on the identity screen so the panel can
+	// show what would be sent and offer a one-click Reset, assuming both
+	// binaries share the same .env.
+	WelcomeMessagePhoneDefault string
+	WelcomeMessageEmailDefault string
+	// LoginCodeMessageDefault mirrors config.LoginCodeMessageTemplate -- the
+	// delivery-message text the telesrv process falls back to whenever the
+	// identity panel override is unset. Same "effective default" contract as
+	// the two fields above.
+	LoginCodeMessageDefault string
+	// RepoRoot is the working directory the .env editor (see
+	// internal/procctl) operates on: it reads .env.example for the field
+	// vocabulary and rewrites .env in place. The panel resolves it the same
+	// way config.Load does -- the process working directory.
+	RepoRoot string
+	// RedisAddr/RedisPassword/RedisDB mirror the telesrv-side ephemeral store
+	// settings, used by the Services status page to ping Redis the same way
+	// the server is configured (see handleServerStatusAPI in
+	// serversettings.go).
+	RedisAddr     string
+	RedisPassword string
+	RedisDB       int
+	// ServerPort is telesrv's MTProto TCP listen port (config.ListenAddr),
+	// dialed from 127.0.0.1 by the Services status page to report whether the
+	// core server is up.
+	ServerPort int
 }
 
 // loadConfig 通过 internal/config.Load() 加载 .env 配置文件与环境变量，
@@ -113,17 +150,55 @@ func loadConfig() (uiConfig, error) {
 	}
 	sum := sha256.Sum256([]byte(appCfg.AdminSessionKey))
 
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return uiConfig{}, fmt.Errorf("resolve working directory: %w", err)
+	}
+	serverPort, err := serverListenPort(appCfg.ListenAddr)
+	if err != nil {
+		return uiConfig{}, err
+	}
+
 	return uiConfig{
-		Addr:          appCfg.AdminUIAddr,
-		PostgresDSN:   appCfg.PostgresDSN,
-		AdminAPIURL:   adminAPIURL(adminAPIAddr),
-		AdminAPIToken: appCfg.AdminAPIToken,
-		Password:      appCfg.AdminUIPassword,
-		Token:         appCfg.AdminUIToken,
-		SessionKey:    sum[:],
-		DiskStatsPath: dashboardDiskPath(appCfg),
-		Permissions:   appCfg.AdminUIPermissions,
+		Addr:                       appCfg.AdminUIAddr,
+		PostgresDSN:                appCfg.PostgresDSN,
+		AdminAPIURL:                adminAPIURL(adminAPIAddr),
+		AdminAPIToken:              appCfg.AdminAPIToken,
+		Password:                   appCfg.AdminUIPassword,
+		Token:                      appCfg.AdminUIToken,
+		SessionKey:                 sum[:],
+		DiskStatsPath:              dashboardDiskPath(appCfg),
+		Permissions:                appCfg.AdminUIPermissions,
+		IdentityDir:                appCfg.IdentityDir,
+		WelcomeMessagePhoneDefault: appCfg.WelcomeMessagePhoneTemplate,
+		WelcomeMessageEmailDefault: appCfg.WelcomeMessageEmailTemplate,
+		LoginCodeMessageDefault:    appCfg.LoginCodeMessageTemplate,
+		RepoRoot:                   repoRoot,
+		RedisAddr:                  appCfg.RedisAddr,
+		RedisPassword:              appCfg.RedisPassword,
+		RedisDB:                    appCfg.RedisDB,
+		ServerPort:                 serverPort,
 	}, nil
+}
+
+// serverListenPort extracts the TCP port from telesrv's MTProto listen
+// address (config.ListenAddr), defaulting like config does. Only the port is
+// used: the status check always dials 127.0.0.1 so it probes this machine's
+// own telesrv process regardless of what interface it was bound to.
+func serverListenPort(addr string) (int, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = "0.0.0.0:2398"
+	}
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0, fmt.Errorf("parse TELESRV_LISTEN %q: %w", addr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0, fmt.Errorf("parse TELESRV_LISTEN port %q: %w", portStr, err)
+	}
+	return port, nil
 }
 
 func dashboardDiskPath(cfg config.Config) string {

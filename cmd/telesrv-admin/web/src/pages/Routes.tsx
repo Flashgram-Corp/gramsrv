@@ -6,6 +6,7 @@ import { AccountsPage } from "./AccountsPage";
 import { CollectibleUsernameDetailPage } from "./CollectibleUsernameDetailPage";
 import { CollectibleUsernamesPage } from "./CollectibleUsernamesPage";
 import { CollectiblePhonesPage } from "./CollectiblePhonesPage";
+import { NftGiftsPage } from "./NftGiftsPage";
 import { ChannelDetailPage } from "./ChannelDetailPage";
 import { ChannelsPage } from "./ChannelsPage";
 import { BotDetailPage } from "./BotDetailPage";
@@ -15,7 +16,6 @@ import { EmojiPage } from "./EmojiPage";
 import { GifCatalogPage } from "./GifCatalogPage";
 import { Dashboard } from "./Dashboard";
 import { GroupMessageDetailPage } from "./GroupMessageDetailPage";
-import { GroupMessagesPage } from "./GroupMessagesPage";
 import { MessageDetailPage } from "./MessageDetailPage";
 import { MessagesPage } from "./MessagesPage";
 import { AuctionsPage } from "./AuctionsPage";
@@ -28,21 +28,26 @@ import { BotVerificationPage } from "./BotVerificationPage";
 import { BotVerificationRequestPage } from "./BotVerificationRequestPage";
 import { VerificationDetailPage } from "./VerificationDetailPage";
 import { VerificationPage } from "./VerificationPage";
+import { SharedDevicesPage } from "./SharedDevicesPage";
 import { StoragePage } from "./StoragePage";
 import { StickerSetsPage } from "./StickerSetsPage";
 import { StarsDetailPage } from "./StarsDetailPage";
 import { StarsPage } from "./StarsPage";
 import {
   PermissionGate,
+  permissionAccountsRead,
   permissionAdminsManage,
   permissionAuditRead,
   permissionBotVerificationReview,
+  permissionMessagesRead,
   permissionPremiumManage,
+  permissionServerManage,
   permissionStarsRead,
   permissionVerificationReview
 } from "../permissions";
 import { AdminUsersPage } from "./AdminUsersPage";
 import { AuditLogPage } from "./AuditLogPage";
+import { ServerSettingsPage } from "./ServerSettingsPage";
 
 export function Routes({ route, navigate }: { route: RouteState; navigate: Navigate }) {
   const accountID = route.path.match(/^\/accounts\/(\d+)$/)?.[1];
@@ -101,6 +106,13 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
       </PermissionGate>
     );
   }
+  if (route.path === "/server-settings") {
+    return (
+      <PermissionGate permission={permissionServerManage}>
+        <ServerSettingsPage search={route.search} />
+      </PermissionGate>
+    );
+  }
   const starsUserID = route.path.match(/^\/stars\/(\d+)$/)?.[1];
   if (starsUserID) {
     return (
@@ -126,7 +138,10 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
     return <CollectibleUsernamesPage navigate={navigate} />;
   }
   if (route.path === "/collectible-phones") {
-    return <CollectiblePhonesPage />;
+    return <CollectiblePhonesPage navigate={navigate} />;
+  }
+  if (route.path === "/nft-gifts") {
+    return <NftGiftsPage navigate={navigate} />;
   }
   if (route.path === "/account-ratings") {
     return <AccountRatingsPage navigate={navigate} />;
@@ -137,7 +152,7 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
   if (route.path === "/monetization" || route.path === "/premium") {
     return (
       <PermissionGate permission={permissionPremiumManage}>
-        <PremiumPlansPage />
+        <PremiumPlansPage navigate={navigate} />
       </PermissionGate>
     );
   }
@@ -155,6 +170,13 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
   }
   if (route.path === "/accounts") {
     return <AccountsPage navigate={navigate} />;
+  }
+  if (route.path === "/accounts/shared-devices") {
+    return (
+      <PermissionGate permission={permissionAccountsRead}>
+        <SharedDevicesPage navigate={navigate} />
+      </PermissionGate>
+    );
   }
   if (route.path === "/channels") {
     return <ChannelsPage navigate={navigate} />;
@@ -178,40 +200,51 @@ export function Routes({ route, navigate }: { route: RouteState; navigate: Navig
     return <StickerSetsPage kind="stickers" navigate={navigate} />;
   }
 	if (route.path === "/gif-catalog") {
-		return <GifCatalogPage />;
+		return <GifCatalogPage navigate={navigate} />;
 	}
 	if (route.path === "/gifts") {
-		return <GiftsPage />;
+		return <GiftsPage navigate={navigate} />;
 	}
 	if (route.path === "/give-gifts") {
-		return <GiveGiftsPage />;
+		return <GiveGiftsPage navigate={navigate} />;
 	}
 	if (route.path === "/auctions") {
-		return <AuctionsPage />;
+		return <AuctionsPage navigate={navigate} />;
 	}
   if (route.path === "/messages/detail" || route.path === "/messages/private/detail") {
     return (
-      <MessageDetailPage
-        ownerUserID={Number(route.search.get("owner_user_id") || "0")}
-        msgID={Number(route.search.get("msg_id") || "0")}
-        navigate={navigate}
-      />
+      <PermissionGate permission={permissionMessagesRead}>
+        <MessageDetailPage
+          ownerUserID={Number(route.search.get("owner_user_id") || "0")}
+          msgID={Number(route.search.get("msg_id") || "0")}
+          navigate={navigate}
+        />
+      </PermissionGate>
     );
   }
   if (route.path === "/messages/groups/detail") {
     return (
-      <GroupMessageDetailPage
-        channelID={Number(route.search.get("channel_id") || "0")}
-        msgID={Number(route.search.get("msg_id") || "0")}
-        navigate={navigate}
-      />
+      <PermissionGate permission={permissionMessagesRead}>
+        <GroupMessageDetailPage
+          channelID={Number(route.search.get("channel_id") || "0")}
+          msgID={Number(route.search.get("msg_id") || "0")}
+          navigate={navigate}
+        />
+      </PermissionGate>
     );
   }
-  if (route.path === "/messages/groups") {
-    return <GroupMessagesPage navigate={navigate} />;
-  }
-  if (route.path === "/messages" || route.path === "/messages/private") {
-    return <MessagesPage navigate={navigate} />;
+  // Both tabs keep their own path so a link to one still opens on it -- the
+  // tab is a view of /messages, not a hidden bit of component state.
+  if (route.path === "/messages" || route.path === "/messages/private" || route.path === "/messages/groups") {
+    return (
+      <PermissionGate permission={permissionMessagesRead}>
+        <MessagesPage
+          navigate={navigate}
+          tab={route.path === "/messages/groups" ? "groups" : "private"}
+          onTab={(tab) => navigate(tab === "groups" ? "/messages/groups" : "/messages/private")}
+        />
+      </PermissionGate>
+    );
   }
   return <Dashboard navigate={navigate} />;
 }

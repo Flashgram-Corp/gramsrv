@@ -398,6 +398,25 @@ func (s *Server) prepareInboundLayerRPCBatch(ctx context.Context, c *Conn, plan 
 				item.payload = destroyAuthKeyRequest{}
 				continue
 			}
+			if terminal, recognized := wrappedHelpTestTerminal(err); recognized {
+				if terminal.WireSize != bin.Word || !validWrappedHelpTestChain(terminal) {
+					s.log.Debug("Wrapped help.test terminal rejected",
+						zap.Int("profile", int(terminal.Profile)),
+						zap.Int("wire_size", terminal.WireSize),
+						zap.Int("wrapper_count", terminal.WrapperCount()),
+						zap.Int64("msg_id", item.msgID),
+					)
+					item.kind = inboundItemRPCAdmissionError
+					item.method = "help.test"
+					item.payload = &mt.RPCError{ErrorCode: 400, ErrorMessage: "INPUT_REQUEST_INVALID"}
+					c.metrics.InboundRPCDropped(item.method, "layer_admission")
+					continue
+				}
+				item.kind = inboundItemHelpTest
+				item.method = "help.test"
+				item.payload = helpTestRequest{}
+				continue
+			}
 			if errors.Is(err, ErrLayerProfileConflict) {
 				return err
 			}
@@ -1076,6 +1095,14 @@ func (s *Server) decodeInboundLayerRPCWithOptions(state LayerProfileSnapshot, bo
 		if terminal, recognized := wrappedDestroyAuthKeyTerminal(err); recognized {
 			method = "destroy_auth_key"
 			s.log.Debug("Generated wrapper admission exposed MTProto service terminal",
+				zap.String("method", method),
+				zap.Int("profile", int(terminal.Profile)),
+				zap.Uint32("wire_id", terminal.WireID),
+				zap.Int("wire_size", terminal.WireSize),
+			)
+		} else if terminal, recognized := wrappedHelpTestTerminal(err); recognized {
+			method = "help.test"
+			s.log.Debug("Generated wrapper admission exposed legacy terminal",
 				zap.String("method", method),
 				zap.Int("profile", int(terminal.Profile)),
 				zap.Uint32("wire_id", terminal.WireID),

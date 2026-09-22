@@ -3,13 +3,58 @@
     grid-template-columns: 1fr;
   }
 
+  /* Below the desktop breakpoint the sidebar gives up its left column and
+     collapses into a slim header strip: brand on the left, the whole menu in
+     a single horizontally scrollable row beside it. This keeps every entry
+     reachable without a tall menu block towering over the page content. */
   .sidebar {
     position: static;
+    display: flex;
     height: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-right: 0;
+    border-bottom: 1px solid var(--sidebar-line);
+  }
+
+  .sidebar-label {
+    display: none;
+  }
+
+  .brand {
+    min-height: 32px;
+    padding: 0 2px;
+  }
+
+  .brand-mark {
+    width: 28px;
+    height: 28px;
+  }
+
+  .brand small {
+    display: none;
   }
 
   .nav-list {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    flex: 1 1 auto;
+    min-width: 0;
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .nav-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-item {
+    grid-template-columns: 16px max-content;
+    min-height: 34px;
+    padding: 0 10px;
+    white-space: nowrap;
   }
 
   .sidebar-status {
@@ -42,17 +87,18 @@
   .overview-metrics,
   .metric-row,
   .summary-grid,
-  .command-steps {
+  .command-steps,
+  .service-grid {
     grid-template-columns: 1fr;
   }
 
   .sidebar {
-    gap: 12px;
-    padding: 14px;
+    gap: 6px;
+    padding: 6px 10px;
   }
 
   .nav-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px;
   }
 
   .topbar,

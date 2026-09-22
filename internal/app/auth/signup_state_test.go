@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -377,8 +378,14 @@ func TestEmailSetupVerificationAuthorizesSignUpWithout777000Message(t *testing.T
 	if err != nil {
 		t.Fatalf("ListByUser: %v", err)
 	}
-	if len(list.Dialogs) != 0 || len(list.Messages) != 0 {
-		t.Fatalf("email SignUp created 777000 bootstrap state: dialogs=%+v messages=%+v", list.Dialogs, list.Messages)
+	// email SignUp must not create the bootstrap *login-code* message (no
+	// dialogs test pre-welcome), but every SignUp now fires the unconditional
+	// welcome notification from 777000.
+	if len(list.Dialogs) != 1 || list.Dialogs[0].Peer.ID != domain.OfficialSystemUserID || len(list.Messages) != 1 {
+		t.Fatalf("email SignUp 777000 state: dialogs=%+v messages=%+v", list.Dialogs, list.Messages)
+	}
+	if got := list.Messages[0]; strings.Contains(got.Body, "Login code:") || len(got.Entities) != 0 {
+		t.Fatalf("email SignUp wrote a login-code message: %+v", got)
 	}
 	if email, found, err := accountSvc.LoginEmailByPhone(ctx, phone); err != nil || !found || email != "new@example.test" {
 		t.Fatalf("LoginEmailByPhone email=%q found=%v err=%v", email, found, err)

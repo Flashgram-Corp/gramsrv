@@ -19,6 +19,9 @@ import type {
   CustomVerificationRequestListResponse,
   VerificationIconListResponse,
   EmojiListResponse,
+  EnvGroup,
+  ServerIdentity,
+  ServerStatus,
   ChannelListResponse,
   CollectibleUsernameDetail,
   CollectibleUsernameListResponse,
@@ -42,6 +45,8 @@ import type {
   StorageStatsResponse,
   StarsLedgerResponse,
   StarsTopListResponse,
+  SharedDeviceGroupListResponse,
+  UniqueStarGiftListResponse,
   VerificationApplicationDetail,
   VerificationApplicationListResponse,
   VerificationCountsResponse
@@ -162,6 +167,7 @@ export const api = {
   logout: () => request<{ ok: boolean }>("/api/logout", { method: "POST", body: "{}" }),
   accounts: (params: URLSearchParams) => request<AccountListResponse>(`/api/accounts?${params.toString()}`),
   account: (id: number) => request<AccountDetail>(`/api/accounts/${id}`),
+  sharedDeviceGroups: (params: URLSearchParams) => request<SharedDeviceGroupListResponse>(`/api/accounts/shared-devices?${params.toString()}`),
   channels: (params: URLSearchParams) => request<ChannelListResponse>(`/api/channels?${params.toString()}`),
   channel: (id: number) => request<ChannelDetail>(`/api/channels/${id}`),
   bots: (params: URLSearchParams) => request<BotListResponse>(`/api/bots?${params.toString()}`),
@@ -176,6 +182,8 @@ export const api = {
     request<CollectiblePhoneListResponse>(`/api/collectible-phones?${params.toString()}`),
   collectiblePhone: (id: string) =>
     request<CollectiblePhoneDetail>(`/api/collectible-phones/${encodeURIComponent(id)}`),
+  nftGifts: (params: URLSearchParams) =>
+    request<UniqueStarGiftListResponse>(`/api/nft-gifts?${params.toString()}`),
   accountRatings: (params: URLSearchParams) =>
     request<AccountRatingListResponse>(`/api/account-ratings?${params.toString()}`),
   accountRating: (userID: string) =>
@@ -264,6 +272,16 @@ export const api = {
 	setChannelAvatar: (form: FormData) => request<CommandResult>("/api/actions/set-channel-avatar", { method: "POST", body: form }),
   adminUsers: () => request<AdminConsoleUserList>("/api/admin-users"),
   auditLogs: (params: URLSearchParams) => request<AuditLogListResponse>(`/api/audit-logs?${params.toString()}`),
+  // Server Settings -- identity and login-notification template overrides are
+  // saved through the generic action() below; the read side and status probes
+  // have their own GETs, and the icon upload is multipart (a base64 body would
+  // inflate a file ~33% and decodeAction's 1MiB cap would reject it before the
+  // handler ever saw it -- see serversettings.go).
+  serverIdentity: () => request<ServerIdentity>("/api/server/identity"),
+  serverEnv: () => request<EnvGroup[]>("/api/server/env"),
+  serverStatus: () => request<ServerStatus>("/api/server/status"),
+  serverIconURL: (bust = 0) => `/api/server/icon?_=${bust}`,
+  uploadServerIcon: (form: FormData) => request<CommandResult>("/api/actions/upload-server-icon", { method: "POST", body: form }),
   action: (path: string, payload: Record<string, unknown>) => request<CommandResult>(path, {
     method: "POST",
     body: JSON.stringify(payload)

@@ -1606,7 +1606,8 @@ func clientMessageContentPolicyFor(typeID uint32) clientMessageContentPolicy {
 		mt.BadServerSaltTypeID,
 		mt.MsgDetailedInfoTypeID,
 		mt.MsgNewDetailedInfoTypeID,
-		destroyAuthKeyRequestTypeID:
+		destroyAuthKeyRequestTypeID,
+		helpTestRequestTypeID:
 		return clientMessageContentOptional
 	default:
 		return clientMessageContentRequired

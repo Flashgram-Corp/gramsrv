@@ -17,8 +17,8 @@ import (
 	"github.com/iamxvbaba/td/bin"
 	mtcrypto "github.com/iamxvbaba/td/crypto"
 
-	"telesrv/internal/branding"
 	"telesrv/internal/domain"
+	"telesrv/internal/identity"
 	"telesrv/internal/otpdelivery"
 	"telesrv/internal/store"
 )
@@ -102,6 +102,20 @@ type Service struct {
 	loginEmailCodeLength   int
 	// premiumGrantMonths 是新注册账号默认赠送的会员月数；0 表示关闭赠送。
 	premiumGrantMonths int
+	// welcomeMessageIdentity 是 identity.Store 的共享实例，recordWelcomeMessage
+	// 每次调用都重新读取（不缓存），使管理面板对登录通知模板的修改无需重启即可
+	// 生效——与 identity 包自身的设计契约一致。nil 时该来源被跳过，直接落到
+	// welcomeMessage{Phone,Email}Default。
+	welcomeMessageIdentity     *identity.Store
+	welcomeMessagePhoneDefault string
+	welcomeMessageEmailDefault string
+	// loginCodeMessageIdentity/loginCodeMessageEnvDefault 与
+	// welcomeMessageIdentity/welcomeMessage{Phone,Email}Default 同构，不过针对
+	// 777000 登录码投递消息而非登录成功后的欢迎通知——见
+	// WithLoginCodeMessageTemplate 与 resolveLoginCodeMessageTemplate。登录码消息
+	// 不分渠道，故只有一份 env 默认值（而非每渠道一份）。
+	loginCodeMessageIdentity   *identity.Store
+	loginCodeMessageEnvDefault string
 }
 
 type loginEmailStore interface {
@@ -133,6 +147,46 @@ func WithLoginMessages(messages store.MessageStore, dialogs store.DialogStore) O
 		s.messages = messages
 		s.dialogs = dialogs
 	}
+}
+
+// WithLoginWelcomeMessages 配置 777000 登录通知消息模板正文的解析链（见
+// domain.ResolveWelcomeMessageTemplate）：store 在每次 recordWelcomeMessage 调用时
+// 实时读取（绝不缓存，管理面板的修改无需重启即可生效），phoneDefault/emailDefault 是
+// 配置提供的环境变量回退（Config.WelcomeMessage{Phone,Email}Template），只在面板未设
+// 覆盖时使用。nil store 直接跳过该来源。
+func WithLoginWelcomeMessages(store *identity.Store, phoneDefault, emailDefault string) Option {
+	return func(s *Service) {
+		s.welcomeMessageIdentity = store
+		s.welcomeMessagePhoneDefault = phoneDefault
+		s.welcomeMessageEmailDefault = emailDefault
+	}
+}
+
+// WithLoginCodeMessageTemplate 配置 777000 登录码投递消息模板正文的解析链（见
+// domain.ResolveLoginCodeMessageTemplate）：store 在每次 deliverLoginCode/
+// recordLoginMessage 调用时实时读取（绝不缓存，管理面板的修改无需重启即可生效），
+// envDefault 是配置提供的环境变量回退（Config.LoginCodeMessageTemplate），只在面板
+// 未设覆盖时使用。nil store 直接跳过该来源。调用方通常传入与 WithLoginWelcomeMessages
+// 同一个 *identity.Store 实例，两者读写的是同一个 identity.json。
+func WithLoginCodeMessageTemplate(store *identity.Store, envDefault string) Option {
+	return func(s *Service) {
+		s.loginCodeMessageIdentity = store
+		s.loginCodeMessageEnvDefault = envDefault
+	}
+}
+
+// resolveLoginCodeMessageTemplate 每次调用都实时解析 777000 登录码消息模板（绝不
+// 缓存），与 recordWelcomeMessage 的「总是现读」契约一致，使管理面板的编辑无需重启
+// 即可生效。本 service 内所有走 domain.OfficialLoginCodeMessage 的调用都必须经过
+// 这里，而不是各自硬编码模板副本。
+func (s *Service) resolveLoginCodeMessageTemplate() string {
+	panelOverride := ""
+	if s.loginCodeMessageIdentity != nil {
+		if info, err := s.loginCodeMessageIdentity.Get(); err == nil {
+			panelOverride = info.LoginCodeMessageTemplate
+		}
+	}
+	return domain.ResolveLoginCodeMessageTemplate(panelOverride, s.loginCodeMessageEnvDefault)
 }
 
 // WithLoginCodeDelivery 注入已有账号 app-code 的 durable 投递边界。
@@ -350,6 +404,11 @@ func (s *Service) CompletePasswordSignIn(ctx context.Context, authKeyID [8]byte,
 	} else if !found || userID != expectedUserID {
 		return ErrSystemUserLoginForbidden
 	}
+	// 这是 2FA 账号真正完成登录的收尾（finishSignIn 在 password_pending 时刻意
+	// 跳过欢迎消息）——补发欢迎通知。
+	if u, found, err := s.users.ByID(ctx, expectedUserID); err == nil && found {
+		s.recordWelcomeMessage(ctx, u)
+	}
 	return nil
 }
 
@@ -505,6 +564,7 @@ func (s *Service) deliverLoginCode(ctx context.Context, userID int64, phoneCodeH
 		UserID:        userID,
 		PhoneCodeHash: phoneCodeHash,
 		Code:          code,
+		Template:      s.resolveLoginCodeMessageTemplate(),
 		Date:          int(now.Unix()),
 		ExpiresAt:     now.Add(s.codeTTL).Unix(),
 	}); err != nil {
@@ -1087,6 +1147,9 @@ func (s *Service) finishSignIn(ctx context.Context, auth domain.Authorization, e
 	if passwordNeeded {
 		return existing, domain.Message{}, false, domain.ErrSessionPasswordNeeded
 	}
+	// 2FA 账号的真正完成在 CompletePasswordSignIn（checkPassword 通过时）；这里若
+	// 也发欢迎消息，会把未真正通过密码校验的尝试也通知出来。
+	s.recordWelcomeMessage(ctx, existing)
 	return existing, domain.Message{}, false, nil
 }
 
@@ -1193,6 +1256,7 @@ func (s *Service) SignUp(ctx context.Context, auth domain.Authorization, phone, 
 			return domain.User{}, domain.Message{}, err
 		}
 	}
+	s.recordWelcomeMessage(ctx, u)
 	return u, loginMessage, nil
 }
 
@@ -1267,6 +1331,7 @@ func (s *Service) BindVerifiedLogin(ctx context.Context, auth domain.Authorizati
 	if err := s.bind(ctx, auth, userID); err != nil {
 		return domain.User{}, err
 	}
+	s.recordWelcomeMessage(ctx, u)
 	return u, nil
 }
 
@@ -1438,31 +1503,21 @@ func (s *Service) passwordNeeded(ctx context.Context, userID int64) (bool, error
 	return found && settings.HasPassword, nil
 }
 
-func loginMessageTemplate() string {
-	return `Login code: %s. Do not give this code to anyone, even if they say they are from ` + branding.ProductName() + `!
-
-This code can be used to log in to your ` + branding.ProductName() + ` account. We never ask it for anything else.
-
-If you didn't request this code by trying to log in on another device, simply ignore this message.`
-}
-
+// recordLoginMessage 为「新手机号渠道账号」的 bootstrap 路径（SignUp 的
+// rec.Channel == codeChannelPhone 分支）写入 777000 登录码消息——该路径还没有
+// owner/dialog，无法走 WithLoginCodeDelivery 的 durable 幂等投递。它和
+// deliverLoginCode 一样、经由 domain.OfficialLoginCodeMessage 与刚解析的模板
+// （见 resolveLoginCodeMessageTemplate）构造消息，而不是各自维护一份模板/实体逻辑
+// 副本，这样管理面板的模板编辑与 {{code}} 占位符实体偏移修复在这里同样生效。
 func (s *Service) recordLoginMessage(ctx context.Context, userID int64, code string) (domain.Message, error) {
 	if s.messages == nil || s.dialogs == nil {
 		return domain.Message{}, nil
 	}
-	body := fmt.Sprintf(loginMessageTemplate(), code)
-	codeOffset := len("Login code: ")
-	msg, err := s.messages.Create(ctx, domain.Message{
-		OwnerUserID: userID,
-		Peer:        domain.Peer{Type: domain.PeerTypeUser, ID: domain.OfficialSystemUserID},
-		From:        domain.Peer{Type: domain.PeerTypeUser, ID: domain.OfficialSystemUserID},
-		Date:        int(time.Now().Unix()),
-		Body:        body,
-		Entities: []domain.MessageEntity{
-			{Type: domain.MessageEntityBold, Offset: 0, Length: len("Login code:")},
-			{Type: domain.MessageEntityBold, Offset: codeOffset, Length: len(code)},
-		},
-	})
+	base, err := domain.OfficialLoginCodeMessage(userID, s.resolveLoginCodeMessageTemplate(), code, int(time.Now().Unix()))
+	if err != nil {
+		return domain.Message{}, err
+	}
+	msg, err := s.messages.Create(ctx, base)
 	if err != nil {
 		return domain.Message{}, err
 	}
@@ -1474,6 +1529,54 @@ func (s *Service) recordLoginMessage(ctx context.Context, userID int64, code str
 		return domain.Message{}, err
 	}
 	return msg, nil
+}
+
+// recordWelcomeMessage 为每次登录成功（SignUp 与后续每次 SignIn/SignInWithEmail/
+// 2FA 完成/passkey 绑定）写入一条无条件的「欢迎回来」777000 消息，与渠道无关。
+// 尽力而为：失败绝不能使登录本身失败——与 recordLoginMessage 不同，它不携带调用方
+// 需要的任何机密。模板正文每次实时解析（见 ResolveWelcomeMessageTemplate），使管理
+// 面板的修改无需重启即可生效。登录方式由账号已确认的登录邮箱判断（见
+// SignInMethodLabel）：邮箱账号 → 用邮箱模板，其余 → 手机号模板。
+func (s *Service) recordWelcomeMessage(ctx context.Context, u domain.User) {
+	if s == nil || s.messages == nil || s.dialogs == nil {
+		return
+	}
+	loginEmail := ""
+	if s.passwords != nil {
+		if settings, found, err := s.passwords.GetByUser(ctx, u.ID); err == nil && found {
+			loginEmail = settings.LoginEmail
+		}
+	}
+	method := domain.LoginMethodFromLabel(domain.SignInMethodLabel(loginEmail))
+	envDefault := s.welcomeMessagePhoneDefault
+	if method == domain.LoginMethodEmail {
+		envDefault = s.welcomeMessageEmailDefault
+	}
+	panelOverride := ""
+	if s.welcomeMessageIdentity != nil {
+		if info, err := s.welcomeMessageIdentity.Get(); err == nil {
+			if method == domain.LoginMethodEmail {
+				panelOverride = info.WelcomeMessageEmailTemplate
+			} else {
+				panelOverride = info.WelcomeMessagePhoneTemplate
+			}
+		}
+	}
+	template := domain.ResolveWelcomeMessageTemplate(method, panelOverride, envDefault)
+	body := domain.RenderWelcomeMessageTemplate(template)
+	msg, err := domain.OfficialWelcomeMessage(u.ID, body, int(time.Now().Unix()))
+	if err != nil {
+		return
+	}
+	created, err := s.messages.Create(ctx, msg)
+	if err != nil {
+		return
+	}
+	_ = s.dialogs.UpsertInbox(ctx, u.ID, domain.Dialog{
+		Peer:           created.Peer,
+		TopMessage:     created.ID,
+		TopMessageDate: created.Date,
+	})
 }
 
 func (s *Service) validateBindTempAuthKey(ctx context.Context, sessionID int64, binding domain.TempAuthKeyBinding) (mtcrypto.BindAuthKeyInner, int, domain.TempAuthKeyBindingResult, error) {

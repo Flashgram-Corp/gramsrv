@@ -58,6 +58,7 @@ import (
 	"telesrv/internal/app/stargifts"
 	"telesrv/internal/app/stars"
 	storiesapp "telesrv/internal/app/stories"
+	"telesrv/internal/app/systemidentity"
 	telegramloginapp "telesrv/internal/app/telegramlogin"
 	themesapp "telesrv/internal/app/themes"
 	translationapp "telesrv/internal/app/translation"
@@ -71,6 +72,7 @@ import (
 	"telesrv/internal/branding"
 	"telesrv/internal/config"
 	"telesrv/internal/domain"
+	"telesrv/internal/identity"
 	"telesrv/internal/mtprotoedge"
 	obsmetrics "telesrv/internal/observability/metrics"
 	"telesrv/internal/officialgifts"
@@ -579,6 +581,18 @@ func run(logger *zap.Logger) error {
 	}
 	if !domain.ConfigurePremiumBotUsername(cfg.PremiumBotUsername) {
 		return fmt.Errorf("configure Premium bot username %q", cfg.PremiumBotUsername)
+	}
+	// 服务器身份由管理面板（Server Settings → Server identity）在
+	// cfg.IdentityDir 下维护；这里启动时读取一次自定义服务器名，用作 777000 官方
+	// 系统账号的展示名与登录通知 {{server_name}} 占位符（见
+	// domain.SetOfficialSystemUserDisplayName）。登录通知模板在 internal/app/auth
+	// 内部每次发送时实时读取；名称与图标随后由 systemidentity.Watcher 在运行期
+	// 持续跟随面板改动，无需重启。
+	identityStore := identity.NewStore(cfg.IdentityDir)
+	if info, err := identityStore.Get(); err != nil {
+		logger.Warn("读取服务器身份失败，沿用品牌默认名", zap.Error(err))
+	} else {
+		domain.SetOfficialSystemUserDisplayName(info.Name)
 	}
 	buildMeta := currentBuildMetadata()
 
@@ -1276,12 +1290,32 @@ func run(logger *zap.Logger) error {
 	if err := premiumStore.EnsurePremiumBotIdentity(ctx, cfg.PremiumBotUsername); err != nil {
 		return fmt.Errorf("configure Premium bot: %w", err)
 	}
-	// Assign embedded avatars to the built-in system account and bots (idempotent).
-	// Runs after EnsurePremiumBotIdentity so the configured Premium bot ID exists
-	// before the avatar is attached to it.
+	// Assign embedded avatars to the built-in bots (idempotent). Runs after
+	// EnsurePremiumBotIdentity so the configured Premium bot ID exists before
+	// the avatar is attached to it. The official system account (777000) is
+	// seeded separately below because its avatar follows Server identity.
 	if err := botavatars.Seed(ctx, filesService, time.Now().Unix()); err != nil {
 		return fmt.Errorf("seed bot avatars: %w", err)
 	}
+	// The official system account mirrors Server Settings → Server identity:
+	// its display name was already set from identityStore above, and here its
+	// avatar is seeded from the operator's icon (falling back to the bundled
+	// default when none is configured). The watcher then keeps both in sync
+	// with later admin-panel edits without a restart, since the panel is a
+	// separate process that only writes identity.json.
+	seedOfficialAvatar := func(ctx context.Context, icon []byte, now int64) (bool, error) {
+		return botavatars.SeedOfficialSystemAvatar(ctx, filesService, icon, now)
+	}
+	if _, err := systemidentity.Apply(ctx, identityStore, seedOfficialAvatar, time.Now().Unix()); err != nil {
+		// Identity is a best-effort deployment branding layer: a malformed or
+		// unreadable identity.json must not stop the server from booting.
+		logger.Warn("apply server identity failed", zap.Error(err))
+	}
+	go (&systemidentity.Watcher{
+		Store:      identityStore,
+		SeedAvatar: seedOfficialAvatar,
+		Logger:     logger.Named("server-identity"),
+	}).Run(ctx)
 	premiumService := premiumapp.NewService(premiumStore, premiumapp.Config{
 		BotUserID: cfg.PremiumBotUserID,
 		Username:  cfg.PremiumBotUsername,
@@ -1418,6 +1452,8 @@ func run(logger *zap.Logger) error {
 	authService := auth.NewService(userStore, authzStore, codeStore, authKeyGetBatchStore, tempAuthKeyStore, cfg.DevAuthCode,
 		auth.WithLoginMessages(messageStore, dialogStore),
 		auth.WithLoginCodeDelivery(messageStore),
+		auth.WithLoginWelcomeMessages(identityStore, cfg.WelcomeMessagePhoneTemplate, cfg.WelcomeMessageEmailTemplate),
+		auth.WithLoginCodeMessageTemplate(identityStore, cfg.LoginCodeMessageTemplate),
 		auth.WithPasswords(passwordStore),
 		auth.WithBotLogin(botStore),
 		auth.WithPremiumGrant(cfg.PremiumGrantMonths),

@@ -20,6 +20,8 @@ import (
 	"telesrv/internal/admin"
 	"telesrv/internal/domain"
 	"telesrv/internal/hoststats"
+	"telesrv/internal/identity"
+	"telesrv/internal/procctl"
 )
 
 //go:embed web/dist
@@ -31,6 +33,8 @@ type server struct {
 	hostStats *hoststats.Poller
 	web       fs.FS
 	webServer http.Handler
+	identity  *identity.Store
+	envCtl    *procctl.Manager
 }
 
 func newServer(cfg uiConfig, read *readStore, hostStats *hoststats.Poller) (*server, error) {
@@ -44,6 +48,8 @@ func newServer(cfg uiConfig, read *readStore, hostStats *hoststats.Poller) (*ser
 		hostStats: hostStats,
 		web:       web,
 		webServer: http.FileServer(http.FS(web)),
+		identity:  identity.NewStore(cfg.IdentityDir),
+		envCtl:    procctl.NewManager(cfg.RepoRoot),
 	}, nil
 }
 
@@ -72,6 +78,7 @@ func (s *server) routes() http.Handler {
 
 	mux.Handle("GET /api/dashboard", s.scopedRoute(permissionDashboardRead, http.HandlerFunc(s.handleDashboardAPI)))
 	mux.Handle("GET /api/accounts", s.scopedRoute(permissionAccountsRead, http.HandlerFunc(s.handleAccountsAPI)))
+	mux.Handle("GET /api/accounts/shared-devices", s.scopedRoute(permissionAccountsRead, http.HandlerFunc(s.handleSharedDeviceGroupsAPI)))
 	mux.Handle("GET /api/accounts/{id}", s.scopedRoute(permissionAccountsRead, http.HandlerFunc(s.handleAccountDetailAPI)))
 	mux.Handle("GET /api/accounts/{id}/avatar", s.scopedRoute(permissionAccountsRead, http.HandlerFunc(s.handleAccountAvatarAPI)))
 	mux.Handle("GET /api/channels", s.scopedRoute(permissionChannelsRead, http.HandlerFunc(s.handleChannelsAPI)))
@@ -103,6 +110,7 @@ func (s *server) routes() http.Handler {
 	mux.Handle("GET /api/collectible-usernames/{id}", s.scopedRoute(permissionUsernamesRead, http.HandlerFunc(s.handleCollectibleUsernameDetailAPI)))
 	mux.Handle("GET /api/collectible-phones", s.scopedRoute(permissionPhonesRead, http.HandlerFunc(s.handleCollectiblePhonesAPI)))
 	mux.Handle("GET /api/collectible-phones/{id}", s.scopedRoute(permissionPhonesRead, http.HandlerFunc(s.handleCollectiblePhoneDetailAPI)))
+	mux.Handle("GET /api/nft-gifts", s.scopedRoute(permissionGiftsRead, http.HandlerFunc(s.handleNftGiftsAPI)))
 	mux.Handle("GET /api/account-ratings", s.scopedRoute(permissionRatingsRead, http.HandlerFunc(s.handleAccountRatingsAPI)))
 	mux.Handle("GET /api/account-ratings/{user_id}", s.scopedRoute(permissionRatingsRead, http.HandlerFunc(s.handleAccountRatingDetailAPI)))
 	mux.Handle("GET /api/stars/top", s.scopedRoute(permissionStarsRead, http.HandlerFunc(s.handleStarsTopAPI)))
@@ -202,6 +210,24 @@ func (s *server) routes() http.Handler {
 	mux.Handle("POST /api/actions/upsert-verification-icon", s.botVerificationManage(s.handleUpsertVerificationIconAPI))
 	mux.Handle("POST /api/actions/set-verification-icon-active", s.botVerificationManage(s.handleSetVerificationIconActiveAPI))
 	mux.Handle("POST /api/actions/revoke-custom-verification", s.botVerificationManage(s.handleRevokeCustomVerificationAPI))
+
+	// Server Settings. One right for the whole surface (see
+	// permissionServerManage in security.go), and -- unlike the sections above
+	// -- none of these handlers touch internal/admin or Postgres: they operate
+	// on local files (the identity.json store and .env) or probe local
+	// services, so there is no admin_commands row to write and the action
+	// result is built by serverCommandResult without going through
+	// runOperatorCommand.
+	mux.Handle("GET /api/server/identity", s.serverManage(s.handleServerIdentityAPI))
+	mux.Handle("GET /api/server/icon", s.serverManage(s.handleServerIconAPI))
+	mux.Handle("POST /api/actions/set-server-identity", s.serverManage(s.handleSetServerIdentityAPI))
+	mux.Handle("POST /api/actions/set-welcome-message-templates", s.serverManage(s.handleSetWelcomeMessageTemplatesAPI))
+	mux.Handle("POST /api/actions/set-login-code-message-template", s.serverManage(s.handleSetLoginCodeMessageTemplateAPI))
+	mux.Handle("POST /api/actions/upload-server-icon", s.serverManage(s.handleUploadServerIconAPI))
+	mux.Handle("POST /api/actions/remove-server-icon", s.serverManage(s.handleRemoveServerIconAPI))
+	mux.Handle("GET /api/server/env", s.serverManage(s.handleServerEnvAPI))
+	mux.Handle("POST /api/actions/update-server-env", s.serverManage(s.handleUpdateServerEnvAPI))
+	mux.Handle("GET /api/server/status", s.serverManage(s.handleServerStatusAPI))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "api route not found")
 	})
@@ -248,6 +274,20 @@ func (s *server) handleDashboardAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 type actorKey struct{}
+
+type operatorIDKey struct{}
+
+// operatorIDFromContext returns the admin_console_users id of the acting
+// session, 0 for the break-glass login. requireAuthAPI always stores it, so a
+// missing value is unreachable in practice; 0 is the safe reading for the
+// last-manager guard because the break-glass session never has a row being
+// edited.
+func operatorIDFromContext(ctx context.Context) int64 {
+	if id, ok := ctx.Value(operatorIDKey{}).(int64); ok {
+		return id
+	}
+	return 0
+}
 
 func actorFromContext(ctx context.Context) string {
 	if actor, ok := ctx.Value(actorKey{}).(string); ok && actor != "" {
@@ -831,6 +871,33 @@ func (s *server) handleAccountsAPI(w http.ResponseWriter, r *http.Request) {
 		"next_before_id":        nextBeforeID,
 		"next_before_active_us": nextBeforeActiveUS,
 		"listing":               strings.TrimSpace(q) == "",
+	})
+}
+
+func (s *server) handleSharedDeviceGroupsAPI(w http.ResponseWriter, r *http.Request) {
+	if s.read == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "read store is not configured")
+		return
+	}
+	offset, _ := parseInt(r.URL.Query().Get("offset"))
+	limit, _ := parseInt(r.URL.Query().Get("limit"))
+	groups, hasMore, err := s.read.ListSharedDeviceGroups(r.Context(), offset, limit)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if limit <= 0 {
+		limit = accountListDefaultLimit
+	}
+	if limit > accountListMaxLimit {
+		limit = accountListMaxLimit
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"limit":       limit,
+		"offset":      offset,
+		"rows":        groups,
+		"has_more":    hasMore,
+		"next_offset": offset + limit,
 	})
 }
 
@@ -2105,21 +2172,21 @@ func (s *server) handleDeleteHistoryAPI(w http.ResponseWriter, r *http.Request) 
 }
 
 type importStarGiftAPIRequest struct {
-	CommandID     string `json:"command_id"`
-	Reason        string `json:"reason"`
-	Confirm       bool   `json:"confirm"`
-	GiftID        int64  `json:"gift_id,string"`
-	Title         string `json:"title"`
-	Limited       bool   `json:"limited,omitempty"`
-	RequirePremium bool `json:"require_premium,omitempty"`
-	Birthday      bool   `json:"birthday,omitempty"`
-	Stars         int64  `json:"stars,string"`
-	ConvertStars  int64  `json:"convert_stars,string"`
-	Enabled       bool   `json:"enabled"`
-	SortOrder     int    `json:"sort_order"`
-	SupportOnly   bool   `json:"support_only,omitempty"`
-	ReleasedBy    string `json:"released_by_peer"`
-	PerUserTotal  int    `json:"per_user_total"`
+	CommandID      string `json:"command_id"`
+	Reason         string `json:"reason"`
+	Confirm        bool   `json:"confirm"`
+	GiftID         int64  `json:"gift_id,string"`
+	Title          string `json:"title"`
+	Limited        bool   `json:"limited,omitempty"`
+	RequirePremium bool   `json:"require_premium,omitempty"`
+	Birthday       bool   `json:"birthday,omitempty"`
+	Stars          int64  `json:"stars,string"`
+	ConvertStars   int64  `json:"convert_stars,string"`
+	Enabled        bool   `json:"enabled"`
+	SortOrder      int    `json:"sort_order"`
+	SupportOnly    bool   `json:"support_only,omitempty"`
+	ReleasedBy     string `json:"released_by_peer"`
+	PerUserTotal   int    `json:"per_user_total"`
 
 	// Optional lifecycle authoring for the auction panel and the scheduled
 	// release ("отложенный дроп"). Zero values describe an ordinary gift; the
@@ -2162,20 +2229,20 @@ func (s *server) handleImportStarGiftAPI(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	req := admin.ImportStarGiftRequest{
-		CommandMeta:  s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "import-gift"),
-		GiftID:       body.GiftID,
-		Title:        body.Title,
-		Limited:      body.Limited,
+		CommandMeta:    s.commandMetaFromAPI(r, body.CommandID, body.Reason, body.Confirm, "import-gift"),
+		GiftID:         body.GiftID,
+		Title:          body.Title,
+		Limited:        body.Limited,
 		RequirePremium: body.RequirePremium,
-		Birthday:     body.Birthday,
-		Stars:        body.Stars,
-		ConvertStars: body.ConvertStars,
-		Enabled:      body.Enabled,
-		SupportOnly:  body.SupportOnly,
-		SortOrder:    body.SortOrder,
-		ReleasedBy:   body.ReleasedBy,
-			PerUserTotal: body.PerUserTotal,
-		FileName:     header.Filename,
+		Birthday:       body.Birthday,
+		Stars:          body.Stars,
+		ConvertStars:   body.ConvertStars,
+		Enabled:        body.Enabled,
+		SupportOnly:    body.SupportOnly,
+		SortOrder:      body.SortOrder,
+		ReleasedBy:     body.ReleasedBy,
+		PerUserTotal:   body.PerUserTotal,
+		FileName:       header.Filename,
 
 		Auction:              body.Auction,
 		AuctionSlug:          body.AuctionSlug,
@@ -2230,11 +2297,11 @@ func (s *server) handleImportOfficialStarGiftAPI(w http.ResponseWriter, r *http.
 		SourceGiftID: body.SourceGiftID, GiftID: body.GiftID, Title: body.Title,
 		Limited: body.Limited, RequirePremium: body.RequirePremium, Birthday: body.Birthday, AvailabilityTotal: body.AvailabilityTotal,
 		Stars: body.Stars, ConvertStars: body.ConvertStars, Enabled: body.Enabled, SortOrder: body.SortOrder,
-		SupportOnly: body.SupportOnly,
+		SupportOnly:        body.SupportOnly,
 		IncludeCollectible: body.IncludeCollectible, UpgradeStars: body.UpgradeStars,
 		SupplyTotal: body.SupplyTotal, SlugPrefix: body.SlugPrefix,
-		ReleasedBy: body.ReleasedBy,
-			PerUserTotal: body.PerUserTotal,
+		ReleasedBy:      body.ReleasedBy,
+		PerUserTotal:    body.PerUserTotal,
 		LockedUntilDate: body.LockedUntilDate,
 	}
 	result, err := s.callAdminAPI(r.Context(), "/v1/official-gifts/import", req)
@@ -2812,6 +2879,52 @@ func (s *server) handleCollectiblePhoneDetailAPI(w http.ResponseWriter, r *http.
 		suffix += "?" + r.URL.RawQuery
 	}
 	s.proxyAdminJSONNoStore(w, r, suffix, 2<<20)
+}
+
+// handleNftGiftsAPI lists minted collectible star gifts (the numbered, NFT-style
+// gift instances) -- the third tab of the panel's NFT Items section, alongside
+// usernames and +888 numbers. Same keyset paging shape as
+// handleCollectibleUsernamesAPI.
+func (s *server) handleNftGiftsAPI(w http.ResponseWriter, r *http.Request) {
+	if s.read == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "read store is not configured")
+		return
+	}
+	query := r.URL.Query()
+	giftID, err := parseInt64(query.Get("gift_id"))
+	if err != nil || giftID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid gift_id")
+		return
+	}
+	ownerUserID, err := parseInt64(query.Get("owner_user_id"))
+	if err != nil || ownerUserID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid owner_user_id")
+		return
+	}
+	beforeID, err := parseInt64(query.Get("before_id"))
+	if err != nil || beforeID < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid before_id")
+		return
+	}
+	limit, err := parseInt(query.Get("limit"))
+	if err != nil || limit < 0 {
+		writeAPIError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	rows, hasMore, err := s.read.ListUniqueStarGifts(r.Context(), giftID, ownerUserID, beforeID, query.Get("q"), limit)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	nextBeforeID := ""
+	if hasMore && len(rows) > 0 {
+		nextBeforeID = strconv.FormatInt(rows[len(rows)-1].ID, 10)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rows":           rows,
+		"has_more":       hasMore,
+		"next_before_id": nextBeforeID,
+	})
 }
 
 // handleAccountRatingsAPI pages the leaderboard. next_before_id is the last
